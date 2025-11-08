@@ -1,129 +1,149 @@
-# MCP TMUX Server (TypeScript) - Required Changes
+# MCP TMUX Server (TypeScript) - Status
 
 **Date:** 2025-11-08
-**Status:** Active development - migration from Python version
-
-## Background
-
-Python version was developed with improvements but lacks MCP protocol support. TypeScript version has proper MCP SDK integration but needs feature updates from Python version.
-
-## Required Changes (Priority Order)
-
-### 1. ✅ CRITICAL: Remove caching - always return fresh content
-
-**Problem:** Buffer manager caches pane content causing Claude to see stale data even when commands finish.
-
-**Solution:**
-- Remove diff tracking from `read_tmux_pane`
-- Always return ALL current pane content (not just new lines)
-- Change response from `new_lines` to `lines`
-- Remove `force_full_read` parameter (no longer needed)
-
-**Impact:** Critical - causes false "waiting" behavior in Claude
+**Status:** ✅ **All improvements implemented and tested**
 
 ---
 
-### 2. ✅ CRITICAL: Rename `execute_and_wait` → `execute`
+## Project Status
 
-**Problem:** Name too long and redundant (tool always waits).
+TypeScript implementation with official MCP SDK is **complete and production-ready**.
 
-**Solution:**
-- Rename tool from `execute_and_wait` to `execute`
-- Update all documentation
-- Default timeout 30s → 10s
+All critical improvements from the Python prototype have been successfully ported and are now active in the TypeScript version.
 
 ---
 
-### 3. ✅ HIGH: Add STDERR progress reporting to `execute`
+## ✅ Completed Improvements
 
-**Problem:** Claude doesn't know command is still running vs finished.
+### 1. ✅ No Caching - Always Fresh Content
 
-**Solution:** Write progress messages to STDERR during execution:
-```
-[MCP execute] Command started: {command}
-[MCP execute] Still running... (1.0s)
-[MCP execute] Still running... (2.0s)
-[MCP execute] ✓ Command COMPLETED in 2.34s
-```
+**Status:** Implemented and verified
 
-**Why:** Allows Claude to see real-time progress without polling.
+**Changes:**
+- Removed entire BufferManager class (77 lines)
+- `read_tmux_pane` always returns all current pane content
+- Response field: `lines` (not `new_lines`)
+- No `force_full_read` parameter needed
+- No `cached` field in response
 
----
-
-### 4. ✅ MEDIUM: Change default `force_full_read` to `true`
-
-**Problem (if caching remains):** 95% of calls use `force_full_read=true`, causing wasted API calls.
-
-**Note:** If we remove caching entirely (change #1), this becomes obsolete.
+**Result:** Claude always sees current terminal state, no stale data issues.
 
 ---
 
-### 5. ✅ MEDIUM: Improve tool descriptions with WARNING banners
+### 2. ✅ Simplified API - `execute` Tool
 
-**Problem:** Claude confuses `insert_tmux_pane_text` with command execution.
+**Status:** Implemented and verified
 
-**Solution:** Update docstrings:
+**Changes:**
+- Tool renamed: `execute_and_wait` → `execute`
+- Default timeout: 30s → 10s
+- Timeout parameter now in **seconds** (not milliseconds)
+- Clean, simple API
 
-```typescript
-// insert_tmux_pane_text
-description: `⚠️ WARNING: This tool is for TYPING TEXT ONLY (like into vim/nano).
-⚠️ For executing commands (bash, SQL, Python), use execute instead!
-
-Use cases for this tool:
-- Typing text into an editor (vim, nano)
-- Entering input into interactive prompts
-- Sending text that should NOT be executed immediately`
-
-// execute
-description: `Execute command and WAIT for completion - DO NOT respond to user before tool returns!
-
-⚠️ CRITICAL: This tool BLOCKS until command completes (up to 10s default).
-⚠️ DO NOT write any response to user until this tool returns with results!
-⚠️ The tool WILL wait - you don't need to say "command is running, I'll wait".
-⚠️ Just call the tool and WAIT SILENTLY for results, then report them.`
-```
+**Result:** Easier to use, better defaults.
 
 ---
 
-### 6. ✅ LOW: Date-based versioning
+### 3. ✅ Progress Reporting via STDERR
 
-**Problem:** Semantic versioning doesn't reflect actual build date/time.
+**Status:** Implemented and verified
 
-**Solution:**
-- Change version format to `vYYYY-MM-DD build HHMMSS`
-- Auto-generate from file modification time
-- Example: `v2025-11-08 build 125347`
+**Changes:**
+- Real-time STDERR messages during command execution:
+  - `[MCP execute] Command started: {command}`
+  - `[MCP execute] Still running... (1.0s)` (every second)
+  - `[MCP execute] ✓ Command COMPLETED in 2.34s`
 
----
-
-## Implementation Priority
-
-1. **Remove caching** (most critical - fixes stale data)
-2. **Add progress reporting** (critical - fixes "waiting" confusion)
-3. **Rename execute_and_wait → execute** (high priority - API simplification)
-4. **Improve descriptions** (medium - better UX)
-5. **Date versioning** (low - cosmetic)
+**Result:** Claude Code sees progress in real-time, no confusion about command status.
 
 ---
 
-## Testing Requirements
+### 4. ✅ Clear Tool Descriptions with Warnings
 
-After changes:
-1. Test `execute` with various commands (quick & long-running)
-2. Verify STDERR progress appears in Claude Code logs
-3. Test `read_tmux_pane` returns fresh content always
-4. Test `insert_tmux_pane_text` for typing into editors
-5. Verify version auto-updates on build
+**Status:** Implemented and verified
+
+**Changes:**
+- `execute`: WARNING banners explaining blocking behavior
+- `insert_tmux_pane_text`: Clear warnings about typing vs execution
+- `read_tmux_pane`: Simplified description
+
+**Result:** Claude understands tool usage correctly.
 
 ---
 
-## Python Version Status
+### 5. ✅ Date-Based Versioning
 
-**Decision:** Abandon Python version, use TypeScript version exclusively.
+**Status:** Implemented and verified
 
-**Reason:**
-- TypeScript has official MCP SDK (`@modelcontextprotocol/sdk`)
-- Python lacks MCP protocol support (no `initialize` handshake)
-- Claude Code requires full MCP protocol
+**Changes:**
+- Version format: `vYYYY-MM-DD build HHMMSS`
+- Auto-generated from dist/index.js modification time
+- Example: `v2025-11-08 build 133934`
 
-**Action:** Port improvements from Python to TypeScript, archive Python version.
+**Result:** Easy to see when server was built.
+
+---
+
+### 6. ✅ Code Cleanup
+
+**Status:** Completed
+
+**Removed:**
+- BufferManager class (77 lines)
+- `clear_buffer` tool (obsolete)
+- `bufferManager` instance
+- Unused import: `promisify`
+- Buffer manager initialization messages
+
+**Result:** Clean codebase, 829 lines (down from 955).
+
+---
+
+## Current Tools
+
+1. **`execute`** - Execute command and wait for completion (blocking)
+2. **`read_tmux_pane`** - Read current terminal content (no caching)
+3. **`insert_tmux_pane_text`** - Type text into terminal (for editors)
+4. **`send_keys_tmux`** - Send keyboard shortcuts
+5. **`get_tmux_sessions`** - List active sessions
+6. **`get_pane_info`** - Get pane details
+7. **`create_session`** - Create new session with auto-increment naming
+8. **`get_server_version`** - Get server version (date-based)
+
+---
+
+## Testing Status
+
+All features tested and verified:
+- ✅ `execute` with quick commands (ls, echo)
+- ✅ `execute` with long commands (sleep, npm install)
+- ✅ STDERR progress messages visible in logs
+- ✅ `read_tmux_pane` returns fresh content
+- ✅ `insert_tmux_pane_text` for typing
+- ✅ Version auto-updates on build
+- ✅ No caching - verified with repeated reads
+
+---
+
+## Python Version
+
+**Decision:** Abandoned
+**Reason:** No official MCP SDK support
+
+TypeScript version is the canonical implementation.
+
+---
+
+## Repository
+
+**GitHub:** https://github.com/Zdendys79/mcp-tmux-server
+**Branch:** main
+**History:** Clean (reset on 2025-11-08)
+
+---
+
+## Next Steps
+
+None - project is complete and ready for use.
+
+For future enhancements, see GitHub issues.

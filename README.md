@@ -126,8 +126,7 @@ Reads FRESH content from tmux pane - NO CACHING, always returns current state. U
     "user@host:~/project$ "
   ],
   "total_lines": 3,
-  "timestamp": "2025-11-08T12:34:56.789",
-  "cached": false
+  "timestamp": "2025-11-08T12:34:56.789"
 }
 ```
 
@@ -289,24 +288,7 @@ console.log(`Running: ${info.command}`);
 
 ---
 
-### `clear_buffer` - Clear buffer tracking
-
-**Description:**
-Manually clears buffer for specific pane or all panes. Note: Buffering should be disabled by default (always returns fresh content).
-
-**Parameters:**
-- `target` (string, optional) - Specific target like "session:0.0", or omit for all
-
-**Returns:**
-```json
-{
-  "cleared": "session-1:0.0"
-}
-```
-
----
-
-### `get_server_info` - Get server version and status
+### `get_server_version` - Get server version and status
 
 **Description:**
 Returns MCP server version, capabilities, and current configuration.
@@ -418,19 +400,15 @@ if (result.timeout_occurred) {
 ```
 tmux/
 ├── src/
-│   ├── index.ts            # Main MCP server entry point
-│   ├── tmux-manager.ts     # Tmux command wrapper
-│   ├── buffer-manager.ts   # Buffer management (to be deprecated)
-│   └── types.ts            # TypeScript type definitions
+│   └── index.ts            # Main MCP server (single file implementation)
 ├── dist/
 │   └── index.js           # Compiled JavaScript
-├── config/
-│   └── example_config.json
-├── tests/
+├── tools/
+│   └── new-session.sh     # Helper script for session creation
 ├── package.json
 ├── tsconfig.json
 ├── README.md
-├── STATUS.md              # Required changes from Python version
+├── STATUS.md              # Project status and completed improvements
 └── .gitignore
 ```
 
@@ -440,18 +418,10 @@ tmux/
 - MCP protocol handler using `@modelcontextprotocol/sdk`
 - Stdio communication (reads stdin, writes stdout)
 - Tool registration and routing
+- Tmux command execution (inline, no separate manager)
 - Configuration management
 - Session whitelist enforcement
-
-**TmuxManager (`tmux-manager.ts`)**
-- Wraps all tmux subprocess calls
-- Methods: `capturePane()`, `listSessions()`, `sendKeys()`
-- Timeout enforcement
-- Security: never uses `shell: true`
-
-**BufferManager (`buffer-manager.ts`)**
-- Currently implements diff tracking
-- **TO BE DEPRECATED** - should return fresh content always
+- Progress reporting via STDERR
 
 ### Data Flow
 
@@ -511,43 +481,33 @@ node dist/index.js
 - Verify session exists: `tmux list-sessions`
 - Check session is in `allowed_sessions` if whitelist is set
 
-### Stale output
-- Buffering should be disabled - output should always be fresh
-- If seeing old data, check that caching removal was implemented (see STATUS.md)
-
----
-
-## Required Changes
-
-See `STATUS.md` for detailed list of required changes to port improvements from Python version.
-
-**Priority changes:**
-1. Remove caching - always return fresh content
-2. Rename `execute_and_wait` → `execute`
-3. Add STDERR progress reporting
-4. Improve tool descriptions with WARNING banners
-5. Date-based versioning
+### Output issues
+- Server always returns fresh content (no caching)
+- If issues persist, try reconnecting MCP server or restart Claude Code
 
 ---
 
 ## Version History
 
-**Version Format:** `vYYYY-MM-DD build HHMMSS` (to be implemented - see STATUS.md)
+**Version Format:** `vYYYY-MM-DD build HHMMSS`
 
-### Current Version (TypeScript)
-- Initial TypeScript implementation with MCP SDK
-- Basic read/write functionality
-- Buffer-based diff tracking (to be removed)
-- Execute and wait capability
+### Current Version (v2025-11-08)
+- Full TypeScript implementation with MCP SDK
+- No caching - always returns fresh terminal content
+- `execute` tool with STDERR progress reporting
+- Date-based versioning (auto-generated from build time)
+- Default timeout: 10s
+- Clear WARNING banners in tool descriptions
+- Clean codebase (829 lines, no dead code)
 
-### Target Version (after porting Python improvements)
-- **BREAKING:** Remove caching - always returns fresh content
-- **BREAKING:** `execute_and_wait` renamed to `execute`
-- **BREAKING:** `read_tmux_pane` returns `lines` instead of `new_lines`
-- **NEW:** Progress reporting via STDERR during command execution
-- **NEW:** Default timeout reduced to 10s (was 30s)
-- **NEW:** Auto-versioning based on build date/time
-- **IMPROVED:** Tool descriptions with clear warnings about blocking behavior
+### Features
+- Execute commands with automatic completion detection
+- Real-time progress reporting via STDERR
+- Read fresh terminal content (no caching)
+- Type text into interactive programs
+- Send keyboard shortcuts (Ctrl+C, arrows, etc.)
+- Session management with auto-increment naming
+- Security: read-only by default, session whitelist support
 
 ---
 
