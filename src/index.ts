@@ -7,88 +7,9 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawn } from "child_process";
-import { promisify } from "util";
 import { readFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-
-// Buffer manager for diff tracking
-class BufferManager {
-  private buffers: Map<string, string[]> = new Map();
-  private maxLines: number;
-
-  constructor(maxLines: number = 1000) {
-    this.maxLines = maxLines;
-  }
-
-  getNewLines(target: string, currentContent: string[]): string[] {
-    if (!this.buffers.has(target)) {
-      // First read - all content is new
-      this.buffers.set(target, currentContent.slice(-this.maxLines));
-      return currentContent;
-    }
-
-    const oldLines = this.buffers.get(target)!;
-
-    // No change
-    if (JSON.stringify(oldLines) === JSON.stringify(currentContent)) {
-      return [];
-    }
-
-    // Simple append case - old is prefix of new
-    if (
-      currentContent.length >= oldLines.length &&
-      JSON.stringify(currentContent.slice(0, oldLines.length)) ===
-        JSON.stringify(oldLines)
-    ) {
-      const newLines = currentContent.slice(oldLines.length);
-      this.buffers.set(target, currentContent.slice(-this.maxLines));
-      return newLines;
-    }
-
-    // Cleared screen or scrolled - return all new content
-    if (currentContent.length < oldLines.length) {
-      this.buffers.set(target, currentContent.slice(-this.maxLines));
-      return currentContent;
-    }
-
-    // Find common suffix (scrolling case)
-    let commonSuffixLen = 0;
-    const maxCheck = Math.min(oldLines.length, currentContent.length);
-
-    for (let i = 1; i <= maxCheck; i++) {
-      if (
-        oldLines[oldLines.length - i] ===
-        currentContent[currentContent.length - i]
-      ) {
-        commonSuffixLen = i;
-      } else {
-        break;
-      }
-    }
-
-    // Return lines after common suffix
-    const newLines =
-      commonSuffixLen > 0
-        ? currentContent.slice(currentContent.length - commonSuffixLen + commonSuffixLen)
-        : currentContent;
-
-    this.buffers.set(target, currentContent.slice(-this.maxLines));
-    return newLines;
-  }
-
-  clearBuffer(target: string): void {
-    this.buffers.delete(target);
-  }
-
-  clearAll(): void {
-    this.buffers.clear();
-  }
-
-  getBufferCount(): number {
-    return this.buffers.size;
-  }
-}
 
 // Tmux command execution
 async function execTmux(args: string[]): Promise<string> {
@@ -530,9 +451,6 @@ async function executeAndWait(
   }
 }
 
-// Create buffer manager
-const bufferManager = new BufferManager(1000);
-
 // Create MCP server
 const server = new Server(
   {
@@ -553,7 +471,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "read_tmux_pane",
         description:
-          "Read FRESH content from tmux pane - NO CACHING, always returns current state. Use this to check terminal output at any time.",
+          "Read current content from tmux pane. Returns all visible lines in the terminal.",
         inputSchema: {
           type: "object",
           properties: {
@@ -630,20 +548,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "clear_buffer",
-        description: "Clear diff tracking buffer for a pane or all panes",
-        inputSchema: {
-          type: "object",
-          properties: {
-            target: {
-              type: "string",
-              description:
-                'Target pane (e.g., "session:0.0") or omit to clear all',
-            },
-          },
-        },
-      },
-      {
         name: "create_session",
         description: "Create new tmux session with auto-increment naming",
         inputSchema: {
@@ -716,7 +620,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const target = `${session}:${window}.${pane}`;
         const content = await capturePane(target);
 
-        // ALWAYS return fresh content - no caching!
         return {
           content: [
             {
@@ -726,7 +629,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   target,
                   lines: content,
                   total_lines: content.length,
-                  cached: false,
                   timestamp: new Date().toISOString(),
                 },
                 null,
@@ -808,32 +710,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             },
           ],
         };
-      }
-
-      case "clear_buffer": {
-        const target = (args as any).target;
-
-        if (target) {
-          bufferManager.clearBuffer(target);
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ cleared: target }),
-              },
-            ],
-          };
-        } else {
-          bufferManager.clearAll();
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ cleared: "all" }),
-              },
-            ],
-          };
-        }
       }
 
       case "create_session": {
@@ -945,7 +821,6 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Tmux MCP server running on stdio");
-  console.error(`Buffer manager initialized (max ${1000} lines per pane)`);
 }
 
 main().catch((error) => {
