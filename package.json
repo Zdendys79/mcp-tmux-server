@@ -1,0 +1,28 @@
+{
+  "name": "tmux-mcp-server",
+  "version": "2025-11-08 12:39:32",
+  "description": "MCP server for reading and writing to tmux terminal panes with diff tracking",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "prebuild": "node -e \"const pkg=require('./package.json');const d=new Date();pkg.version=d.toISOString().slice(0,19).replace('T',' ');require('fs').writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\\n')\"",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "tmux",
+    "terminal",
+    "monitoring"
+  ],
+  "author": "Zdendys & Nyara",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.19.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.0",
+    "typescript": "^5.9.3"
+  }
+}
