@@ -194,9 +194,26 @@ async function createSessionWithAutoIncrement(
 const WRITE_COOLDOWN_MS = 10000; // 10 seconds
 let lastWriteTime = 0;
 
-// Safety check: detect interactive prompts before writing
-async function checkPaneSafety(target: string): Promise<{ safe: boolean; warning?: string; last_line?: string }> {
+// Safety check: detect interactive prompts and running processes before writing
+async function checkPaneSafety(target: string): Promise<{ safe: boolean; warning?: string; last_line?: string; running_process?: string }> {
   try {
+    // Get pane info to check running command
+    const paneInfo = await getPaneInfo(target);
+    const runningCommand = paneInfo.command;
+
+    // List of shell commands that are safe (idle shell = no process running)
+    const shellCommands = ['bash', 'zsh', 'sh', 'fish', 'ksh', 'csh', 'tcsh'];
+
+    // If something OTHER than shell is running, session is BUSY
+    if (!shellCommands.includes(runningCommand)) {
+      return {
+        safe: false,
+        warning: `Session is BUSY - process running: ${runningCommand}`,
+        running_process: runningCommand
+      };
+    }
+
+    // Check last line for interactive prompts
     const content = await capturePane(target);
     const lastLine = content[content.length - 1] || "";
 
@@ -211,11 +228,33 @@ async function checkPaneSafety(target: string): Promise<{ safe: boolean; warning
       }
     }
 
-    if (lastLine.trim() !== "" && !lastLine.includes("$") && !lastLine.includes("#")) {
-      return { safe: false, warning: "Command may be running (no prompt)", last_line: lastLine.trim() };
+    // Check for shell prompt (more robust patterns)
+    const promptPatterns = [
+      /[$#]\s*$/,           // Standard $ or # prompt at end
+      />\s*$/,              // > prompt (PowerShell, some shells)
+      /\]\s*$/,             // ] prompt (some custom prompts)
+      /bash-\d+\.\d+[$#]/,  // bash-X.Y$ format
+    ];
+
+    let hasPrompt = false;
+    for (const pattern of promptPatterns) {
+      if (pattern.test(lastLine)) {
+        hasPrompt = true;
+        break;
+      }
     }
 
-    return { safe: true };
+    // If shell is running but no prompt visible, might be running command
+    if (!hasPrompt && lastLine.trim() !== "") {
+      return {
+        safe: false,
+        warning: `No shell prompt detected - command may be running (last line: "${lastLine.trim()}")`,
+        last_line: lastLine.trim(),
+        running_process: runningCommand
+      };
+    }
+
+    return { safe: true, running_process: runningCommand };
   } catch (error) {
     return { safe: false, warning: `Cannot verify: ${error}` };
   }
@@ -451,11 +490,18 @@ async function executeAndWait(
   }
 }
 
+// Get version from package.json
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJsonPath = join(__dirname, "..", "package.json");
+const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+const VERSION = packageJson.version || "unknown";
+
 // Create MCP server
 const server = new Server(
   {
     name: "tmux-mcp-server",
-    version: "1.0.0",
+    version: VERSION,
   },
   {
     capabilities: {
