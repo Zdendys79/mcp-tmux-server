@@ -194,70 +194,125 @@ async function createSessionWithAutoIncrement(
 const WRITE_COOLDOWN_MS = 10000; // 10 seconds
 let lastWriteTime = 0;
 
-// Safety check: detect interactive prompts and running processes before writing
-async function checkPaneSafety(target: string): Promise<{ safe: boolean; warning?: string; last_line?: string; running_process?: string }> {
+// Prompt patterns used for detection
+const PROMPT_PATTERNS = [
+  /[$#]\s*$/,           // Standard $ or # prompt at end
+  />\s*$/,              // > prompt (PowerShell, some shells)
+  /\]\s*$/,             // ] prompt (some custom prompts)
+  /bash-\d+\.\d+[$#]/,  // bash-X.Y$ format
+];
+
+// Dangerous interactive prompts that require user input
+const DANGER_PATTERNS = [
+  /password:/i, /\[y\/n\]/i, /\[yes\/no\]/i, /Are you sure/i,
+  /Do you want/i, /Continue\?/i, /sudo.*password/i
+];
+
+// Check if line looks like a shell prompt
+function isPromptLine(line: string): boolean {
+  for (const pattern of PROMPT_PATTERNS) {
+    if (pattern.test(line)) return true;
+  }
+  return false;
+}
+
+// Check if line is a dangerous interactive prompt
+function isDangerousPrompt(line: string): boolean {
+  for (const pattern of DANGER_PATTERNS) {
+    if (pattern.test(line)) return true;
+  }
+  return false;
+}
+
+// Wait for stable prompt - ensures prompt is visible AND unchanged for stabilityTime
+// Returns immediately if dangerous prompt detected
+// Retries for up to maxWaitTime if prompt keeps changing
+async function waitForStablePrompt(
+  target: string,
+  stabilityTime: number = 2000,  // 2s stability required
+  maxWaitTime: number = 10000,   // 10s max wait
+  pollInterval: number = 200     // Check every 200ms
+): Promise<{
+  safe: boolean;
+  warning?: string;
+  last_line?: string;
+  running_process?: string;
+  waited_ms?: number;
+}> {
+  const startTime = Date.now();
+  let lastLine = "";
+  let lastLineTime = 0;
+
   try {
-    // Get pane info to check running command
+    // Get pane info for informational purposes
     const paneInfo = await getPaneInfo(target);
     const runningCommand = paneInfo.command;
 
-    // List of shell commands that are safe (idle shell = no process running)
-    const shellCommands = ['bash', 'zsh', 'sh', 'fish', 'ksh', 'csh', 'tcsh'];
+    while (Date.now() - startTime < maxWaitTime) {
+      const content = await capturePane(target);
+      const currentLine = content[content.length - 1] || "";
 
-    // If something OTHER than shell is running, session is BUSY
-    if (!shellCommands.includes(runningCommand)) {
-      return {
-        safe: false,
-        warning: `Session is BUSY - process running: ${runningCommand}`,
-        running_process: runningCommand
-      };
-    }
-
-    // Check last line for interactive prompts
-    const content = await capturePane(target);
-    const lastLine = content[content.length - 1] || "";
-
-    const dangerPatterns = [
-      /password:/i, /\[y\/n\]/i, /\[yes\/no\]/i, /Are you sure/i,
-      /Do you want/i, /Continue\?/i, /^\s*>/, /sudo.*password/i
-    ];
-
-    for (const pattern of dangerPatterns) {
-      if (pattern.test(lastLine)) {
-        return { safe: false, warning: `Interactive prompt: "${lastLine.trim()}"`, last_line: lastLine.trim() };
+      // Check for dangerous prompts - fail immediately
+      if (isDangerousPrompt(currentLine)) {
+        return {
+          safe: false,
+          warning: `Interactive prompt: "${currentLine.trim()}"`,
+          last_line: currentLine.trim(),
+          running_process: runningCommand,
+          waited_ms: Date.now() - startTime
+        };
       }
-    }
 
-    // Check for shell prompt (more robust patterns)
-    const promptPatterns = [
-      /[$#]\s*$/,           // Standard $ or # prompt at end
-      />\s*$/,              // > prompt (PowerShell, some shells)
-      /\]\s*$/,             // ] prompt (some custom prompts)
-      /bash-\d+\.\d+[$#]/,  // bash-X.Y$ format
-    ];
-
-    let hasPrompt = false;
-    for (const pattern of promptPatterns) {
-      if (pattern.test(lastLine)) {
-        hasPrompt = true;
-        break;
+      // Check if this is a prompt line
+      if (isPromptLine(currentLine)) {
+        // If same as last time, check stability
+        if (currentLine === lastLine) {
+          const stableFor = Date.now() - lastLineTime;
+          if (stableFor >= stabilityTime) {
+            // Prompt has been stable for required time - SAFE!
+            return {
+              safe: true,
+              running_process: runningCommand,
+              last_line: currentLine.trim(),
+              waited_ms: Date.now() - startTime
+            };
+          }
+        } else {
+          // Prompt changed, reset stability timer
+          lastLine = currentLine;
+          lastLineTime = Date.now();
+        }
+      } else {
+        // Not a prompt line - reset
+        lastLine = currentLine;
+        lastLineTime = Date.now();
       }
+
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
 
-    // If shell is running but no prompt visible, might be running command
-    if (!hasPrompt && lastLine.trim() !== "") {
-      return {
-        safe: false,
-        warning: `No shell prompt detected - command may be running (last line: "${lastLine.trim()}")`,
-        last_line: lastLine.trim(),
-        running_process: runningCommand
-      };
-    }
-
-    return { safe: true, running_process: runningCommand };
+    // Timeout - could not get stable prompt within maxWaitTime
+    return {
+      safe: false,
+      warning: `Session busy - prompt not stable within ${maxWaitTime}ms (last line: "${lastLine.trim()}")`,
+      last_line: lastLine.trim(),
+      running_process: (await getPaneInfo(target)).command,
+      waited_ms: Date.now() - startTime
+    };
   } catch (error) {
-    return { safe: false, warning: `Cannot verify: ${error}` };
+    return {
+      safe: false,
+      warning: `Cannot verify: ${error}`,
+      waited_ms: Date.now() - startTime
+    };
   }
+}
+
+// Safety check: detect interactive prompts and running processes before writing
+// IMPORTANT: This function waits for STABLE prompt (unchanged for 2s)
+// If prompt keeps changing, retries for up to 10s before returning BUSY
+async function checkPaneSafety(target: string): Promise<{ safe: boolean; warning?: string; last_line?: string; running_process?: string }> {
+  return await waitForStablePrompt(target, 2000, 10000, 200);
 }
 
 async function tryWrite(target: string, text: string): Promise<{
@@ -266,9 +321,21 @@ async function tryWrite(target: string, text: string): Promise<{
   rate_limited?: boolean;
   retry_after_seconds?: number;
   safety_check: any;
+  error?: string;
 }> {
-  // Safety check first
+  // Safety check first - waits for stable prompt (2s stability, 10s max)
   const safetyCheck = await checkPaneSafety(target);
+
+  // If not safe, DO NOT send text!
+  if (!safetyCheck.safe) {
+    console.error(`[Write] BLOCKED for ${target}: ${safetyCheck.warning}`);
+    return {
+      success: false,
+      executed: false,
+      safety_check: safetyCheck,
+      error: safetyCheck.warning,
+    };
+  }
 
   const now = Date.now();
   const timeSinceLastWrite = now - lastWriteTime;
@@ -285,7 +352,7 @@ async function tryWrite(target: string, text: string): Promise<{
     };
   }
 
-  // Execute write
+  // Execute write - only if safe!
   // Un-escape \n and \r sequences that come as literal strings from JSON
   const unescapedText = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
   await sendKeys(target, unescapedText);

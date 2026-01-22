@@ -431,14 +431,34 @@ User types in tmux → command finishes
 AI calls execute(session="foo", command="ls")
     ↓
 MCP Server execute handler
-    ├─ Sends command to tmux
-    ├─ Polls every 500ms
+    ├─ waitForStablePrompt() - waits for prompt to be unchanged for 2s
+    │   ├─ Reads last line every 200ms
+    │   ├─ If prompt detected and stable for 2s → proceed
+    │   ├─ If prompt keeps changing → retry (up to 10s total)
+    │   └─ After 10s without stable prompt → return BUSY error
+    ├─ Sends command to tmux (only if prompt stable!)
+    ├─ Polls every 100ms for output
     ├─ Writes progress to STDERR
-    ├─ Detects prompt return
+    ├─ Detects prompt return (command finished)
     └─ Returns output to AI
     ↓
 AI receives results and reports to user
 ```
+
+### Stable Prompt Detection
+
+The `waitForStablePrompt()` function ensures commands are only sent when the terminal is truly ready:
+
+1. **Reads last line** of pane content
+2. **Checks for prompt** patterns: `$`, `#`, `>`, `]`, `bash-X.Y$`
+3. **Waits 2 seconds** - if prompt unchanged, session is SAFE
+4. **Retries up to 10s** - if prompt keeps changing (user typing, output scrolling)
+5. **Returns BUSY** - if no stable prompt within 10s
+
+This prevents:
+- Interrupting user input (typing in terminal)
+- Sending commands while another command is running
+- False BUSY errors from `pane_current_command` (e.g., "sudo" when `sudo bash` is idle)
 
 ### Progress Reporting (STDERR)
 
@@ -491,7 +511,14 @@ node dist/index.js
 
 **Version Format:** `vYYYY-MM-DD build HHMMSS`
 
-### Current Version (v2025-11-08)
+### Current Version (v2026-01-22)
+- **STABLE PROMPT DETECTION** - `execute` and `insert` now wait for prompt to be STABLE (unchanged for 2s) before sending commands
+- Removed unreliable `pane_current_command` check - no more false BUSY errors when running `sudo bash`
+- Prompt detection is now the ONLY method to determine if session is ready
+- Max wait time: 10s before returning BUSY (with retry loop)
+- Fixed: `tryWrite()` now properly blocks when safety check fails
+
+### v2025-11-08
 - Full TypeScript implementation with MCP SDK
 - No caching - always returns fresh terminal content
 - `execute` tool with STDERR progress reporting
@@ -502,6 +529,7 @@ node dist/index.js
 
 ### Features
 - Execute commands with automatic completion detection
+- **Stable prompt detection** - waits for prompt to be unchanged for 2s before sending
 - Real-time progress reporting via STDERR
 - Read fresh terminal content (no caching)
 - Type text into interactive programs
