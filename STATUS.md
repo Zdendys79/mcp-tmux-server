@@ -142,8 +142,80 @@ TypeScript version is the canonical implementation.
 
 ---
 
+## Known Limitations & Feature Requests
+
+### 1. Nested tmux sessions (tmux-in-tmux)
+
+**Issue:** When working with nested tmux sessions (local tmux → SSH → remote tmux), the current tools cannot properly detach from the remote session while staying in the local one.
+
+**Current workaround:** Manual keyboard input (`Ctrl+B Ctrl+B D`)
+
+**Requested feature:**
+- Add support for control sequences via `send-keys` command
+- Add helper tool for nested session operations
+- Example: `detach_remote_session()` that sends `Ctrl+B D` to the inner tmux
+
+**Use case:**
+```
+Local: tmux session "base7"
+  → SSH to remote server
+    → tmux attach -t "claude"
+      → Want to detach "claude" but stay in "base7"
+```
+
+**Technical solution:**
+- Implement `send_keys` with support for control characters
+- Support for prefix doubling in nested contexts
+- Tool: `send_tmux_keys(session, keys, nested=False)`
+
+**Priority:** Medium
+**Status:** Logged 2025-11-20
+
+---
+
+### 2. Confusion: Control characters (Ctrl+C) - wrong tool selection
+
+**Issue:** Claude instances frequently use wrong tool for sending control characters (Ctrl+C, Ctrl+D, etc.)
+
+**Incorrect patterns observed:**
+1. ❌ Using `insert_tmux_pane_text` with empty text (does nothing)
+2. ❌ Using `insert_tmux_pane_text` with escape sequences `\x03` (unreliable)
+3. ❌ Multiple failed attempts before using correct method
+
+**Correct methods:**
+
+**Option A: MCP tool (PREFERRED for MCP context)**
+```typescript
+send_keys_tmux(session: "session-1", keys: "C-c")  // Ctrl+C
+send_keys_tmux(session: "session-2", keys: "C-d")  // Ctrl+D
+```
+
+**Option B: Direct tmux command via Bash**
+```bash
+tmux send-keys -t session-1 C-c  # Works immediately
+tmux send-keys -t session-2 C-d  # No MCP overhead
+```
+
+**Why confusion happens:**
+- `insert_tmux_pane_text` description mentions "typing text"
+- Claude doesn't realize control chars need different tool
+- No clear warning that `insert_tmux_pane_text` ≠ keyboard shortcuts
+
+**Recommendation:**
+1. Add WARNING to `insert_tmux_pane_text` description:
+   ```
+   ⚠️ For keyboard shortcuts (Ctrl+C, Ctrl+D), use send_keys_tmux instead!
+   ```
+2. Update Claude global instructions (CLAUDE.md) with examples
+3. Document that Bash `tmux send-keys` is often simpler than MCP tool
+
+**Root cause:** Tool description doesn't clearly separate "typing text" from "sending keys"
+
+**Priority:** Medium
+**Status:** Logged 2025-12-03 (Nyara)
+
+---
+
 ## Next Steps
 
-None - project is complete and ready for use.
-
-For future enhancements, see GitHub issues.
+See above feature requests and GitHub issues for future enhancements.
