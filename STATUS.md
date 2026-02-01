@@ -216,6 +216,40 @@ tmux send-keys -t session-2 C-d  # No MCP overhead
 
 ---
 
+### 3. Root prompt (#) not recognized by execute tool
+
+**Issue:** The `execute` tool only recognizes standard user prompts ending with `$` or `>`. When using a root shell (prompt ends with `#`), the tool reports "Session busy - prompt not stable" even though the session is idle.
+
+**Example:**
+```
+root@jz-work:/home/zdendys#   ← Valid prompt, but not recognized
+```
+
+**Error observed:**
+```json
+{
+  "success": false,
+  "status": "error",
+  "error": "Session busy - prompt not stable within 10000ms (last line: \"\")"
+}
+```
+
+**Current workaround:** Use direct `tmux send-keys` via Bash tool instead of MCP execute.
+
+**Requested fix:**
+- Add `#` to the list of recognized prompt characters
+- Regex pattern should match: `$`, `>`, `#`, and possibly `%` (zsh)
+- Example pattern: `/[$>%#]\s*$/`
+
+**Affected tools:**
+- `execute` - cannot detect completion
+- `insert_tmux_pane_text` - safety check fails
+
+**Priority:** High (blocks root session usage)
+**Status:** Logged 2025-01-29 (Nyara)
+
+---
+
 ## Next Steps
 
 See above feature requests and GitHub issues for future enhancements.
