@@ -367,15 +367,17 @@ async function tryWrite(target: string, text: string): Promise<{
   };
 }
 
+// Fingerprint: last N non-empty lines (robust against trailing empty line variations)
+function contentFingerprint(lines: string[]): string {
+  return lines.filter(l => l.trim() !== "").slice(-5).join("\n");
+}
+
 // Execute command and wait for completion
 async function executeAndWait(
   target: string,
   command: string,
   options: {
     timeout?: number;
-    firstResponseTimeout?: number;
-    promptPattern?: RegExp;
-    pollInterval?: number;
   } = {}
 ): Promise<{
   success: boolean;
@@ -386,15 +388,11 @@ async function executeAndWait(
   warning?: string;
   error?: string;
 }> {
-  const timeout = options.timeout || 10000; // 10s default (changed from 30s)
-  const firstResponseTimeout = options.firstResponseTimeout || 2000; // 2s for first response
-  const pollInterval = options.pollInterval || 200; // 200ms
-  const promptPattern = options.promptPattern || /[$#]\s*$/;
-
+  const timeout = options.timeout || 10000; // 10s default
   const startTime = Date.now();
 
   try {
-    // Safety check
+    // Safety check - waits for stable prompt (2s stability, 10s max)
     const safetyCheck = await checkPaneSafety(target);
     if (!safetyCheck.safe) {
       return {
@@ -407,113 +405,105 @@ async function executeAndWait(
       };
     }
 
-    // Get initial content before command
+    // Capture initial content for output extraction later
     const initialContent = await capturePane(target);
+    const initialFP = contentFingerprint(initialContent);
 
-    // Send command with Enter key
+    // Send command
     await sendCommand(target, command);
     lastWriteTime = Date.now();
     console.error(`[MCP execute] Command started: ${command}`);
 
-    // Wait for first response (command started executing)
-    let firstResponse = false;
-    let waitAttempts = 0;
-    const firstResponseDeadline = startTime + firstResponseTimeout;
+    // Wait for tmux to process keys (fixes race condition with fast commands)
+    await new Promise(resolve => setTimeout(resolve, 100));
 
-    while (Date.now() < firstResponseDeadline && !firstResponse) {
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
-      const content = await capturePane(target);
-      waitAttempts++;
-
-      // Check if content changed from initial (command executed)
-      if (JSON.stringify(content) !== JSON.stringify(initialContent)) {
-        firstResponse = true;
-        const responseTime = Date.now() - startTime;
-        console.error(`[ExecuteAndWait] First response after ${responseTime}ms (${waitAttempts} polls)`);
-      }
-    }
-
-    if (!firstResponse) {
-      const elapsedTime = Date.now() - startTime;
-      return {
-        success: false,
-        output: [],
-        status: 'timeout',
-        execution_time_ms: elapsedTime,
-        prompt_detected: false,
-        error: `No output within ${firstResponseTimeout}ms`,
-      };
-    }
-
-    // Now wait for output to stabilize (idle detection)
-    // Keep checking every 100ms until no new lines appear
-    const idleTimeout = 100; // 100ms idle = command finished
+    // Single poll loop: detect content change + wait for stabilization
+    // Completes when: fingerprint differs from initial AND content stable for 200ms
     let currentContent = await capturePane(target);
+    let lastFP = contentFingerprint(currentContent);
+    let lastChangeTime = Date.now();
     let stableContent = false;
-    let attempts = 0;
-    let hitTimeout = false;
     let lastProgressReport = Date.now();
-    const progressReportInterval = 1000; // Report every 1s
 
-    while (Date.now() - startTime < timeout && !stableContent) {
-      await new Promise(resolve => setTimeout(resolve, idleTimeout));
+    while (Date.now() - startTime < timeout) {
+      await new Promise(resolve => setTimeout(resolve, 100));
       const newContent = await capturePane(target);
-      attempts++;
+      const newFP = contentFingerprint(newContent);
 
-      // Report progress every 1s
+      if (newFP !== lastFP) {
+        // Content still changing - reset stability timer
+        lastFP = newFP;
+        lastChangeTime = Date.now();
+        currentContent = newContent;
+      } else if (Date.now() - lastChangeTime >= 200 && newFP !== initialFP) {
+        // Content stable for 200ms AND differs from initial = command completed
+        stableContent = true;
+        currentContent = newContent;
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.error(`[MCP execute] Command COMPLETED in ${elapsed}s`);
+        break;
+      }
+
+      // Progress reporting every 1s
       const now = Date.now();
-      if (now - lastProgressReport >= progressReportInterval) {
-        const elapsedSeconds = ((now - startTime) / 1000).toFixed(1);
-        console.error(`[MCP execute] Still running... (${elapsedSeconds}s)`);
+      if (now - lastProgressReport >= 1000) {
+        const elapsed = ((now - startTime) / 1000).toFixed(1);
+        console.error(`[MCP execute] Still running... (${elapsed}s)`);
         lastProgressReport = now;
       }
-
-      // Compare content
-      if (JSON.stringify(currentContent) === JSON.stringify(newContent)) {
-        // No change for 100ms = command finished
-        stableContent = true;
-        const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(2);
-        console.error(`[MCP execute] ✓ Command COMPLETED in ${elapsedSeconds}s`);
-      } else {
-        // Content changed, keep waiting
-        currentContent = newContent;
-      }
     }
 
-    // Check if we hit timeout while content was still changing
-    if (!stableContent && Date.now() - startTime >= timeout) {
-      hitTimeout = true;
-      // Get final content
+    if (!stableContent) {
       currentContent = await capturePane(target);
-      const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(2);
-      console.error(`[MCP execute] ⚠ Timeout reached after ${elapsedSeconds}s, command still producing output`);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.error(`[MCP execute] Timeout after ${elapsed}s, command may still be running`);
     }
 
-    // Extract output: find where new content starts
-    let outputStartIndex = 0;
-    for (let i = 0; i < Math.min(initialContent.length, currentContent.length); i++) {
-      if (initialContent[i] !== currentContent[i]) {
-        outputStartIndex = i;
+    // --- Output extraction ---
+    // Strategy: find command echo line, take everything after it until prompt
+    let outputLines: string[] = [];
+
+    // Find the command echo line (search from bottom for most recent match)
+    // Use first 40 chars of command to handle long/wrapped commands
+    const cmdSearch = command.substring(0, Math.min(command.length, 40));
+    let cmdLineIndex = -1;
+    for (let i = currentContent.length - 1; i >= 0; i--) {
+      if (currentContent[i].includes(cmdSearch)) {
+        cmdLineIndex = i;
         break;
       }
     }
 
-    // If no difference found in common part, start from where old content ended
-    if (outputStartIndex === 0 && currentContent.length > initialContent.length) {
-      outputStartIndex = initialContent.length;
+    if (cmdLineIndex >= 0) {
+      // Everything after command echo
+      outputLines = currentContent.slice(cmdLineIndex + 1);
+    } else {
+      // Fallback: diff-based extraction (find where initial and current diverge)
+      let outputStartIndex = 0;
+      for (let i = 0; i < Math.min(initialContent.length, currentContent.length); i++) {
+        if (initialContent[i] !== currentContent[i]) {
+          outputStartIndex = i;
+          break;
+        }
+      }
+      if (outputStartIndex === 0 && currentContent.length > initialContent.length) {
+        outputStartIndex = initialContent.length;
+      }
+      outputLines = currentContent.slice(outputStartIndex);
+      // Remove command echo if present at start
+      if (outputLines.length > 0 && outputLines[0].includes(cmdSearch)) {
+        outputLines = outputLines.slice(1);
+      }
     }
 
-    // Get new lines (skip command echo line, skip final prompt line)
-    let outputLines = currentContent.slice(outputStartIndex);
-
-    // Remove first line if it's the command echo
-    if (outputLines.length > 0 && outputLines[0].includes(command)) {
-      outputLines = outputLines.slice(1);
-    }
-
-    // Remove last line if it's the prompt
-    if (outputLines.length > 0 && promptPattern.test(outputLines[outputLines.length - 1].trim())) {
-      outputLines = outputLines.slice(0, -1);
+    // Remove trailing prompt lines and empty lines
+    while (outputLines.length > 0) {
+      const lastLine = outputLines[outputLines.length - 1];
+      if (lastLine.trim() === "" || isPromptLine(lastLine)) {
+        outputLines.pop();
+      } else {
+        break;
+      }
     }
 
     const executionTime = Date.now() - startTime;
@@ -526,23 +516,14 @@ async function executeAndWait(
         execution_time_ms: executionTime,
         prompt_detected: true,
       };
-    } else if (hitTimeout) {
+    } else {
       return {
         success: false,
         output: outputLines,
         status: 'incomplete',
         execution_time_ms: executionTime,
         prompt_detected: false,
-        warning: `Output incomplete - command still running after ${timeout}ms`,
-      };
-    } else {
-      return {
-        success: false,
-        output: outputLines,
-        status: 'timeout',
-        execution_time_ms: executionTime,
-        prompt_detected: false,
-        error: `Command did not stabilize within ${timeout}ms (${attempts} checks)`,
+        warning: `Command may still be running after ${timeout}ms`,
       };
     }
   } catch (error) {

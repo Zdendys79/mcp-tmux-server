@@ -513,7 +513,10 @@ node dist/index.js
 
 ### Current Version (v2026-02-15)
 - **`send_keys_tmux` tool** - New MCP tool for sending keyboard shortcuts (Ctrl+C, arrows, function keys)
+- **Rewritten `executeAndWait`** - Single poll loop with fingerprint-based change detection (last 5 non-empty lines), fixes false timeout on fast commands with (venv) prompt
+- **100ms initial delay** after `sendCommand()` - fixes race condition where tmux hasn't processed keys yet
 - **Root prompt fix** - `waitForStablePrompt` now filters trailing empty lines, fixing `#` prompt detection
+- **Consistent prompt detection** - output extraction uses `isPromptLine()` instead of separate regex
 - **Documentation cleanup** - Fixed tool name references, updated architecture info
 
 ### v2026-01-22

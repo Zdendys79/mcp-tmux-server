@@ -287,7 +287,12 @@ But read_tmux_pane shows: "test" output is present in the pane
 - Or compare only the last N lines instead of full pane content
 
 **Priority:** High (affects all sessions with virtualenv activated)
-**Status:** Logged 2026-02-15 (Claude, DH_Charlie project)
+**Status:** ✅ Fixed 2026-02-15 - Rewrote `executeAndWait`:
+- Replaced two-phase detection (first-response + stabilization) with single poll loop
+- Added 100ms delay after `sendCommand()` for tmux key processing
+- Fingerprint-based change detection (last 5 non-empty lines) instead of full `JSON.stringify`
+- Uses `isPromptLine()` for consistent prompt detection (was duplicated `promptPattern`)
+- Improved output extraction: finds command echo line from bottom, strips trailing prompts
 
 ---
 
