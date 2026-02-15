@@ -699,7 +699,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_tmux_sessions",
-        description: "List all active tmux sessions with status (idle/busy), running command, user@host, environment type (shell/venv/mysql/python/ssh...), and current working directory.",
+        description: "List all active tmux sessions with status (idle/busy), running command, user@host, environment type (shell/venv/mysql/python/ssh...), and current working directory.\n\nIMPORTANT: Always call this BEFORE creating a new session or executing commands. Pick an existing idle session instead of creating new ones. Only create a new session if ALL existing sessions are busy.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -729,7 +729,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "create_session",
-        description: "Create new tmux session with auto-increment naming",
+        description: "Create new tmux session with auto-increment naming.\n\n⚠️ WARNING: Do NOT create new sessions if idle sessions already exist! Call get_tmux_sessions first and reuse an existing idle session. Only create a new session when ALL sessions are busy and you need a parallel workspace.",
         inputSchema: {
           type: "object",
           properties: {
