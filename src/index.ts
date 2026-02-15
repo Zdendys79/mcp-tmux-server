@@ -250,7 +250,8 @@ async function waitForStablePrompt(
 
     while (Date.now() - startTime < maxWaitTime) {
       const content = await capturePane(target);
-      const currentLine = content[content.length - 1] || "";
+      // Filter out trailing empty lines to find actual prompt (fixes root prompt detection)
+      const currentLine = content.filter(l => l.trim() !== "").pop() || "";
 
       // Check for dangerous prompts - fail immediately
       if (isDangerousPrompt(currentLine)) {
@@ -686,6 +687,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "send_keys_tmux",
+        description: "Send keyboard shortcuts to tmux pane. Use for Ctrl+C, Ctrl+D, arrows, function keys.\n\nSupported keys:\n- Control: C-c, C-u, C-k, C-w, C-a, C-e, C-l, C-d, C-z\n- Special: Enter, Escape, Tab, BSpace, Space\n- Arrows: Up, Down, Left, Right\n- Function: F1-F12",
+        inputSchema: {
+          type: "object",
+          properties: {
+            session: {
+              type: "string",
+              description: "Tmux session name",
+            },
+            keys: {
+              type: "string",
+              description: "Key or key combination to send (e.g. C-c, Enter, Up)",
+            },
+            window: {
+              type: "number",
+              description: "Window index (default: 0)",
+            },
+            pane: {
+              type: "number",
+              description: "Pane index (default: 0)",
+            },
+          },
+          required: ["session", "keys"],
+        },
+      },
+      {
         name: "execute",
         description: "Execute command and WAIT for completion - DO NOT respond to user before tool returns!\n\n⚠️ CRITICAL: This tool BLOCKS until command completes (up to 10s default).\n⚠️ DO NOT write any response to user until this tool returns with results!\n⚠️ The tool WILL wait - you don't need to say \"command is running, I'll wait\".\n⚠️ Just call the tool and WAIT SILENTLY for results, then report them.",
         inputSchema: {
@@ -873,6 +900,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   version,
                   built_iso: stats.mtime.toISOString(),
                   file: distPath,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      case "send_keys_tmux": {
+        const session = (args as any).session;
+        const window = (args as any).window || 0;
+        const pane = (args as any).pane || 0;
+        const keys = (args as any).keys;
+
+        const target = `${session}:${window}.${pane}`;
+        await execTmux(["send-keys", "-t", target, keys]);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  target,
+                  keys,
+                  timestamp: new Date().toISOString(),
                 },
                 null,
                 2

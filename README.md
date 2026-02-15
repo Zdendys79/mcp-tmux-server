@@ -140,7 +140,7 @@ console.log(`Current prompt: ${lastLine}`);
 
 ---
 
-### `write_tmux_pane` - Type text into pane
+### `insert_tmux_pane_text` - Type text into pane
 
 **⚠️ WARNING:** This tool is for TYPING TEXT ONLY (like into vim/nano). For executing commands, use `execute` instead!
 
@@ -170,11 +170,11 @@ Simulates typing text into tmux pane. Does NOT wait for completion or capture ou
 **Example:**
 ```typescript
 // ✅ CORRECT - typing into vim
-await write_tmux_pane({session: "edit", text: "i"});  // Enter insert mode
-await write_tmux_pane({session: "edit", text: "Hello World"});  // Type text
+await insert_tmux_pane_text({session: "edit", text: "i"});  // Enter insert mode
+await insert_tmux_pane_text({session: "edit", text: "Hello World"});  // Type text
 
 // ❌ WRONG - use execute for commands!
-await write_tmux_pane({session: "work", text: "ls -la\n"});  // NO! Use execute instead
+await insert_tmux_pane_text({session: "work", text: "ls -la\n"});  // NO! Use execute instead
 ```
 
 ---
@@ -186,7 +186,7 @@ Sends special keys and keyboard shortcuts to tmux pane. Use for control keys, ar
 
 **Parameters:**
 - `session` (string, required) - Tmux session name
-- `key` (string, required) - Key or key combination to send
+- `keys` (string, required) - Key or key combination to send
 - `window` (int, default: 0) - Window index
 - `pane` (int, default: 0) - Pane index
 
@@ -200,7 +200,7 @@ Sends special keys and keyboard shortcuts to tmux pane. Use for control keys, ar
 ```json
 {
   "target": "session-1:0.0",
-  "key": "C-c",
+  "keys": "C-c",
   "timestamp": "2025-11-08T12:34:56.789"
 }
 ```
@@ -208,16 +208,16 @@ Sends special keys and keyboard shortcuts to tmux pane. Use for control keys, ar
 **Examples:**
 ```typescript
 // Interrupt running process
-await send_keys_tmux({session: "work", key: "C-c"});
+await send_keys_tmux({session: "work", keys: "C-c"});
 
 // Clear current line
-await send_keys_tmux({session: "work", key: "C-u"});
+await send_keys_tmux({session: "work", keys: "C-u"});
 
 // Clear screen
-await send_keys_tmux({session: "work", key: "C-l"});
+await send_keys_tmux({session: "work", keys: "C-l"});
 
 // Navigate command history
-await send_keys_tmux({session: "work", key: "Up"});
+await send_keys_tmux({session: "work", keys: "Up"});
 ```
 
 ---
@@ -371,8 +371,8 @@ console.log(content.lines.slice(-5));  // Last 5 lines
 await execute({session: "repl", command: "python3"});
 
 // Type code (not execute - just typing!)
-await write_tmux_pane({session: "repl", text: "import sys\n"});
-await write_tmux_pane({session: "repl", text: "print(sys.version)\n"});
+await insert_tmux_pane_text({session: "repl", text: "import sys\n"});
+await insert_tmux_pane_text({session: "repl", text: "print(sys.version)\n"});
 
 // Read output
 const content = await read_tmux_pane({session: "repl"});
@@ -386,7 +386,7 @@ const result = await execute({session: "work", command: "sleep 20", timeout: 5})
 
 if (result.timeout_occurred) {
   console.log("Command timed out!");
-  await send_keys_tmux({session: "work", key: "C-c"});  // Interrupt
+  await send_keys_tmux({session: "work", keys: "C-c"});  // Interrupt
 } else {
   console.log("Command completed successfully");
 }
@@ -400,7 +400,7 @@ if (result.timeout_occurred) {
 ```
 tmux/
 ├── src/
-│   └── index.ts            # Main MCP server (single file implementation)
+│   └── index.ts            # Main MCP server (~1000 lines, single file)
 ├── dist/
 │   └── index.js           # Compiled JavaScript
 ├── tools/
@@ -511,7 +511,12 @@ node dist/index.js
 
 **Version Format:** `vYYYY-MM-DD build HHMMSS`
 
-### Current Version (v2026-01-22)
+### Current Version (v2026-02-15)
+- **`send_keys_tmux` tool** - New MCP tool for sending keyboard shortcuts (Ctrl+C, arrows, function keys)
+- **Root prompt fix** - `waitForStablePrompt` now filters trailing empty lines, fixing `#` prompt detection
+- **Documentation cleanup** - Fixed tool name references, updated architecture info
+
+### v2026-01-22
 - **STABLE PROMPT DETECTION** - `execute` and `insert` now wait for prompt to be STABLE (unchanged for 2s) before sending commands
 - Removed unreliable `pane_current_command` check - no more false BUSY errors when running `sudo bash`
 - Prompt detection is now the ONLY method to determine if session is ready
