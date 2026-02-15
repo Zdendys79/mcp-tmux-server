@@ -1,7 +1,7 @@
 {
   "name": "tmux-mcp-server",
-  "version": "facelinorufa",
-  "description": "MCP server for reading and writing to tmux terminal panes with diff tracking",
+  "version": "facemizoxuva",
+  "description": "MCP server for real-time tmux terminal interaction",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
