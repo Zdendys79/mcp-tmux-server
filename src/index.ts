@@ -51,38 +51,123 @@ async function capturePane(target: string): Promise<string[]> {
   return lines;
 }
 
-async function listSessions(): Promise<
-  Array<{ name: string; windows: number; panes: number }>
-> {
+// Detect environment type from command and prompt
+function detectEnvironment(command: string, lastLine: string): string {
+  // Check process command first
+  switch (command) {
+    case "python3": case "python": return "python";
+    case "mysql": case "mariadb": return "mysql";
+    case "node": return "node";
+    case "ssh": case "sshd": return "ssh";
+    case "vim": case "nvim": case "nano": return "editor";
+    case "htop": case "top": case "btop": return "monitor";
+    case "docker": return "docker";
+    case "less": case "more": case "man": return "pager";
+  }
+  // Check prompt prefix for virtual environments
+  const venvMatch = lastLine.match(/^\(([^)]+)\)\s/);
+  if (venvMatch) {
+    const envName = venvMatch[1];
+    if (envName === "venv" || envName === ".venv" || envName.includes("env")) return "venv";
+    if (envName.startsWith("conda")) return "conda";
+    return "venv:" + envName;
+  }
+  return "shell";
+}
+
+// Parse user@host from prompt line
+function parseUserHost(lastLine: string): string {
+  // Match patterns: user@host:, user@host $, (venv) user@host:
+  const match = lastLine.match(/(?:\([^)]+\)\s+)?(\w+@[\w.-]+)/);
+  return match ? match[1] : "";
+}
+
+interface SessionInfo {
+  name: string;
+  windows: number;
+  panes: number;
+  status: "idle" | "busy";
+  command: string;
+  cwd: string;
+  user_host: string;
+  environment: string;
+  last_activity: string;
+  last_activity_ago: string;
+  last_line: string;
+}
+
+async function listSessions(): Promise<SessionInfo[]> {
   try {
-    const sessionNames = await execTmux([
-      "list-sessions",
-      "-F",
-      "#{session_name}",
+    // Get all panes in one call: session|window|pane|command|path|activity
+    const allPanes = await execTmux([
+      "list-panes", "-a", "-F",
+      "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{session_activity}",
     ]);
 
-    const sessions = [];
-    for (const name of sessionNames.trim().split("\n").filter((n) => n)) {
-      const windowsOutput = await execTmux([
-        "list-windows",
-        "-t",
-        name,
-        "-F",
-        "#{window_index}",
-      ]);
-      const windowCount = windowsOutput.trim().split("\n").filter((w) => w)
-        .length;
+    // Group by session
+    const sessionMap = new Map<string, {
+      windows: Set<string>;
+      paneCount: number;
+      command: string;
+      cwd: string;
+      activity: number;
+    }>();
 
-      const panesOutput = await execTmux([
-        "list-panes",
-        "-t",
-        name,
-        "-F",
-        "#{pane_index}",
-      ]);
-      const paneCount = panesOutput.trim().split("\n").filter((p) => p).length;
+    for (const line of allPanes.trim().split("\n").filter(l => l)) {
+      const [name, winIdx, _paneIdx, command, cwd, activity] = line.split("\t");
+      if (!sessionMap.has(name)) {
+        sessionMap.set(name, {
+          windows: new Set(),
+          paneCount: 0,
+          command: command || "bash",
+          cwd: cwd || "",
+          activity: parseInt(activity) || 0,
+        });
+      }
+      const s = sessionMap.get(name)!;
+      s.windows.add(winIdx);
+      s.paneCount++;
+    }
 
-      sessions.push({ name, windows: windowCount, panes: paneCount });
+    // Read last line of each session's primary pane (in parallel)
+    const sessionNames = Array.from(sessionMap.keys());
+    const paneContents = await Promise.all(
+      sessionNames.map(name => capturePane(`${name}:0.0`).catch(() => [""]))
+    );
+
+    const sessions: SessionInfo[] = [];
+    for (let i = 0; i < sessionNames.length; i++) {
+      const name = sessionNames[i];
+      const info = sessionMap.get(name)!;
+      const content = paneContents[i];
+      const lastLine = content.filter(l => l.trim() !== "").pop() || "";
+
+      const idle = isPromptLine(lastLine);
+      const environment = detectEnvironment(info.command, lastLine);
+      const userHost = parseUserHost(lastLine);
+
+      // Format activity timestamp
+      const activityDate = new Date(info.activity * 1000);
+      const agoSeconds = Math.floor((Date.now() - activityDate.getTime()) / 1000);
+      let agoStr: string;
+      if (agoSeconds < 60) agoStr = `${agoSeconds}s ago`;
+      else if (agoSeconds < 3600) agoStr = `${Math.floor(agoSeconds / 60)}m ago`;
+      else if (agoSeconds < 86400) agoStr = `${Math.floor(agoSeconds / 3600)}h ago`;
+      else agoStr = `${Math.floor(agoSeconds / 86400)}d ago`;
+
+      sessions.push({
+        name,
+        windows: info.windows.size,
+        panes: info.paneCount,
+        status: idle ? "idle" : "busy",
+        command: info.command,
+        cwd: info.cwd,
+        user_host: userHost,
+        environment,
+        last_activity: activityDate.toISOString(),
+        last_activity_ago: agoStr,
+        last_line: lastLine.trim(),
+      });
     }
 
     return sessions;
@@ -614,7 +699,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_tmux_sessions",
-        description: "List all active tmux sessions",
+        description: "List all active tmux sessions with status (idle/busy), running command, user@host, environment type (shell/venv/mysql/python/ssh...), and current working directory.",
         inputSchema: {
           type: "object",
           properties: {},
