@@ -38,7 +38,7 @@ Executes command in tmux pane and waits synchronously for completion (up to 10 s
   "command": "sudo apt upgrade -y",
   "status": "background",
   "task_id": "bg-1",
-  "callback_target": "claude-9:0.0",
+  "callback_target": "claude-9",
   "max_monitor_seconds": 600,
   "message": "Command still running. Monitoring in background. Will notify claude-9 when done."
 }
@@ -168,7 +168,7 @@ Lists all currently monitored background tasks (commands waiting for completion 
       "id": "bg-1",
       "target": "base7-19:0.0",
       "command": "sudo apt upgrade -y",
-      "callback_target": "claude-9:0.0",
+      "callback_target": "claude-9",
       "started_at": "2026-02-26T14:32:05.000Z",
       "running_for_seconds": 45,
       "max_wait_seconds": 600

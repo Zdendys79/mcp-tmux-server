@@ -5,33 +5,54 @@
 ```
 tmux/
 ├── src/
-│   └── index.ts            # Main MCP server (~1150 lines, single file)
-├── dist/
-│   └── index.js           # Compiled JavaScript
+│   ├── index.ts          # MCP server entry point: tool schemas, handlers, startup (~560 lines)
+│   ├── tmux.ts           # Low-level tmux operations: exec, capture, sessions, keys (~270 lines)
+│   ├── prompt.ts         # Prompt detection patterns, safety checks, fingerprinting (~130 lines)
+│   ├── execute.ts        # executeAndWait, tryWrite with safety and rate limiting (~240 lines)
+│   └── background.ts     # Background task monitoring with async callbacks (~130 lines)
+├── dist/                 # Compiled JavaScript
 ├── docs/
-│   ├── TOOLS.md           # MCP tools reference
-│   ├── ARCHITECTURE.md    # This file
-│   └── CHANGELOG.md       # Version history
+│   ├── TOOLS.md          # MCP tools reference
+│   ├── ARCHITECTURE.md   # This file
+│   └── CHANGELOG.md      # Version history
 ├── tools/
-│   └── new-session.sh     # Helper script for session creation
+│   └── version-generator.js  # Auto-generates version from git
 ├── package.json
 ├── tsconfig.json
-├── README.md              # Main documentation
-├── STATUS.md              # Project status
+├── README.md             # Main documentation
 └── .gitignore
 ```
 
-## Components
+## Modules
 
-**MCP Server (`index.ts`)**
+**`index.ts`** - MCP Server entry point
 - MCP protocol handler using `@modelcontextprotocol/sdk`
 - Stdio communication (reads stdin, writes stdout)
-- Tool registration and routing
-- Tmux command execution (inline, no separate manager)
-- Background task monitoring with callback notifications
-- Configuration management
-- Session whitelist enforcement
+- Tool registration (ListTools) and routing (CallTool)
+- Git version check at startup (compares local HEAD vs origin/main)
 - Progress reporting via STDERR
+
+**`tmux.ts`** - Low-level tmux operations
+- `execTmux()` - spawn tmux process
+- `capturePane()` - capture pane content
+- `sendKeys()` / `sendCommand()` - send text/commands to panes
+- `listSessions()` - list sessions with enriched info (status, environment, user@host)
+- `createSessionWithAutoIncrement()` - auto-numbered session creation
+
+**`prompt.ts`** - Prompt detection and safety
+- Prompt patterns (`$`, `#`, `>`, `]`, `bash-X.Y$`)
+- Danger patterns (password prompts, confirmations)
+- `waitForStablePrompt()` - ensures 2s stability before sending commands
+- `contentFingerprint()` - last 5 non-empty lines for change detection
+
+**`execute.ts`** - Command execution
+- `executeAndWait()` - send command, poll for completion with fingerprint + prompt detection
+- `tryWrite()` - safe text input with rate limiting (10s cooldown)
+
+**`background.ts`** - Background task monitoring
+- `monitorAndNotify()` - poll every 2s, detect prompt, deliver callback
+- `waitForQuietCallback()` - wait 10s of silence before delivering
+- `deliverCallback()` - send via sendKeys, fallback to source pane on failure
 
 ## Data Flow
 
