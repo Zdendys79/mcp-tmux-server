@@ -3,11 +3,14 @@
 **Version Format:** `vYYYY-MM-DD build HHMMSS`
 
 ## v2026-02-26
+- **Module split** - Refactored monolithic `index.ts` (1282 lines) into 5 modules: `tmux.ts`, `prompt.ts`, `execute.ts`, `background.ts`, `index.ts`
 - **Background task monitoring** - `execute` tool now supports `callback_session` parameter for async monitoring of long-running commands
 - **`list_background_tasks` tool** - New tool to list all active background monitors
 - **Quiet callback delivery** - waits 10s of inactivity on callback pane before sending, never interrupts user typing
-- **Callback failure fallback** - if callback session unreachable, error is displayed in source terminal
+- **Callback failure fallback** - if callback session unreachable, error is displayed in source terminal (with proper shell escaping)
 - **Prompt-based completion** - `executeAndWait` now requires prompt detection (not just content stability) to mark command as completed, fixing false positives on commands like `sleep`
+- **Git version check** - Compares local HEAD vs origin/main at startup, notifies about available updates in first tool response
+- **Callback target fix** - Uses session name only (not `:0.0`) to support any tmux `base-index` configuration
 
 ## v2026-02-15
 - **`send_keys_tmux` tool** - New MCP tool for sending keyboard shortcuts (Ctrl+C, arrows, function keys)
