@@ -1,628 +1,25 @@
 #!/usr/bin/env node
 
+// MCP Tmux Server - Entry point
+// Tool schemas, handlers, and server startup
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { spawn } from "child_process";
 import { readFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
-// Tmux command execution
-async function execTmux(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("tmux", args);
-    let stdout = "";
-    let stderr = "";
+import { execTmux, capturePane, getPaneInfo, sendKeys, listSessions, createSessionWithAutoIncrement } from "./tmux.js";
+import { tryWrite, executeAndWait } from "./execute.js";
+import { BackgroundTask, backgroundTasks, nextTaskId, monitorAndNotify } from "./background.js";
 
-    proc.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`tmux command failed: ${stderr || "unknown error"}`));
-      } else {
-        resolve(stdout);
-      }
-    });
-
-    proc.on("error", (err) => {
-      reject(new Error(`Failed to execute tmux: ${err.message}`));
-    });
-  });
-}
-
-// Tmux operations
-async function capturePane(target: string): Promise<string[]> {
-  const output = await execTmux(["capture-pane", "-p", "-t", target]);
-  const lines = output.split("\n");
-  // Remove trailing empty line
-  if (lines[lines.length - 1] === "") {
-    lines.pop();
-  }
-  return lines;
-}
-
-// Detect environment type from command and prompt
-function detectEnvironment(command: string, lastLine: string): string {
-  // Check process command first
-  switch (command) {
-    case "python3": case "python": return "python";
-    case "mysql": case "mariadb": return "mysql";
-    case "node": return "node";
-    case "ssh": case "sshd": return "ssh";
-    case "vim": case "nvim": case "nano": return "editor";
-    case "htop": case "top": case "btop": return "monitor";
-    case "docker": return "docker";
-    case "less": case "more": case "man": return "pager";
-  }
-  // Check prompt prefix for virtual environments
-  const venvMatch = lastLine.match(/^\(([^)]+)\)\s/);
-  if (venvMatch) {
-    const envName = venvMatch[1];
-    if (envName === "venv" || envName === ".venv" || envName.includes("env")) return "venv";
-    if (envName.startsWith("conda")) return "conda";
-    return "venv:" + envName;
-  }
-  return "shell";
-}
-
-// Parse user@host from prompt line
-function parseUserHost(lastLine: string): string {
-  // Match patterns: user@host:, user@host $, (venv) user@host:
-  const match = lastLine.match(/(?:\([^)]+\)\s+)?(\w+@[\w.-]+)/);
-  return match ? match[1] : "";
-}
-
-interface SessionInfo {
-  name: string;
-  windows: number;
-  panes: number;
-  status: "idle" | "busy";
-  command: string;
-  cwd: string;
-  user_host: string;
-  environment: string;
-  last_activity: string;
-  last_activity_ago: string;
-  last_line: string;
-}
-
-async function listSessions(): Promise<SessionInfo[]> {
-  try {
-    // Get all panes in one call: session|window|pane|command|path|activity
-    const allPanes = await execTmux([
-      "list-panes", "-a", "-F",
-      "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{session_activity}",
-    ]);
-
-    // Group by session
-    const sessionMap = new Map<string, {
-      windows: Set<string>;
-      paneCount: number;
-      command: string;
-      cwd: string;
-      activity: number;
-    }>();
-
-    for (const line of allPanes.trim().split("\n").filter(l => l)) {
-      const [name, winIdx, _paneIdx, command, cwd, activity] = line.split("\t");
-      if (!sessionMap.has(name)) {
-        sessionMap.set(name, {
-          windows: new Set(),
-          paneCount: 0,
-          command: command || "bash",
-          cwd: cwd || "",
-          activity: parseInt(activity) || 0,
-        });
-      }
-      const s = sessionMap.get(name)!;
-      s.windows.add(winIdx);
-      s.paneCount++;
-    }
-
-    // Read last line of each session's primary pane (in parallel)
-    const sessionNames = Array.from(sessionMap.keys());
-    const paneContents = await Promise.all(
-      sessionNames.map(name => capturePane(`${name}:0.0`).catch(() => [""]))
-    );
-
-    const sessions: SessionInfo[] = [];
-    for (let i = 0; i < sessionNames.length; i++) {
-      const name = sessionNames[i];
-      const info = sessionMap.get(name)!;
-      const content = paneContents[i];
-      const lastLine = content.filter(l => l.trim() !== "").pop() || "";
-
-      const idle = isPromptLine(lastLine);
-      const environment = detectEnvironment(info.command, lastLine);
-      const userHost = parseUserHost(lastLine);
-
-      // Format activity timestamp
-      const activityDate = new Date(info.activity * 1000);
-      const agoSeconds = Math.floor((Date.now() - activityDate.getTime()) / 1000);
-      let agoStr: string;
-      if (agoSeconds < 60) agoStr = `${agoSeconds}s ago`;
-      else if (agoSeconds < 3600) agoStr = `${Math.floor(agoSeconds / 60)}m ago`;
-      else if (agoSeconds < 86400) agoStr = `${Math.floor(agoSeconds / 3600)}h ago`;
-      else agoStr = `${Math.floor(agoSeconds / 86400)}d ago`;
-
-      sessions.push({
-        name,
-        windows: info.windows.size,
-        panes: info.paneCount,
-        status: idle ? "idle" : "busy",
-        command: info.command,
-        cwd: info.cwd,
-        user_host: userHost,
-        environment,
-        last_activity: activityDate.toISOString(),
-        last_activity_ago: agoStr,
-        last_line: lastLine.trim(),
-      });
-    }
-
-    return sessions;
-  } catch (error) {
-    // No server running
-    if ((error as Error).message.includes("no server running")) {
-      return [];
-    }
-    throw error;
-  }
-}
-
-async function getPaneInfo(
-  target: string
-): Promise<{ width: number; height: number; command: string; active: boolean }> {
-  const output = await execTmux([
-    "display-message",
-    "-t",
-    target,
-    "-p",
-    "#{pane_width},#{pane_height},#{pane_current_command},#{pane_active}",
-  ]);
-
-  const parts = output.trim().split(",");
-  if (parts.length !== 4) {
-    throw new Error(`Unexpected tmux output format: ${output}`);
-  }
-
-  return {
-    width: parseInt(parts[0]),
-    height: parseInt(parts[1]),
-    command: parts[2],
-    active: parts[3] === "1",
-  };
-}
-
-async function sendKeys(target: string, text: string): Promise<void> {
-  // Check if text ends with newline
-  const hasNewline = text.endsWith('\n') || text.endsWith('\r\n');
-
-  // Remove newline from text if present
-  let cleanText = hasNewline ? text.replace(/[\r\n]+$/, '') : text;
-
-  // WORKAROUND: tmux send-keys strips trailing semicolons even with -l flag!
-  // Solution: If text ends with semicolon, send it separately
-  const hasSemicolon = cleanText.endsWith(';');
-  if (hasSemicolon) {
-    cleanText = cleanText.slice(0, -1); // Remove trailing semicolon
-  }
-
-  // Send text literally (without interpreting special characters)
-  await execTmux(["send-keys", "-t", target, "-l", cleanText]);
-
-  // Send semicolon separately if needed (WITHOUT -l flag to avoid tmux stripping it)
-  if (hasSemicolon) {
-    await execTmux(["send-keys", "-t", target, "\\;"]);
-  }
-
-  // If original text had newline, send Enter key separately
-  if (hasNewline) {
-    await execTmux(["send-keys", "-t", target, "Enter"]);
-  }
-}
-
-async function sendCommand(target: string, command: string): Promise<void> {
-  // Simple approach: clear line, send text literally, press Enter
-
-  // 1. Clear line with Ctrl+U
-  await execTmux(["send-keys", "-t", target, "C-u"]);
-
-  // 2. Send command text literally
-  await execTmux(["send-keys", "-t", target, "-l", command]);
-
-  // 3. Press Enter
-  await execTmux(["send-keys", "-t", target, "Enter"]);
-}
-
-async function createSessionWithAutoIncrement(
-  prefix: string = "session",
-  command?: string
-): Promise<{ session_name: string; number: number }> {
-  // Get all sessions with this prefix
-  const allSessions = await listSessions();
-  const regex = new RegExp(`^${prefix}-(\\d+)$`);
-
-  let maxNum = 0;
-  for (const session of allSessions) {
-    const match = session.name.match(regex);
-    if (match) {
-      const num = parseInt(match[1]);
-      if (num > maxNum) maxNum = num;
-    }
-  }
-
-  const nextNum = maxNum + 1;
-  const sessionName = `${prefix}-${nextNum}`;
-
-  // Create session
-  if (command) {
-    await execTmux(["new-session", "-d", "-s", sessionName, command]);
-  } else {
-    await execTmux(["new-session", "-d", "-s", sessionName]);
-  }
-
-  return { session_name: sessionName, number: nextNum };
-}
-
-// Rate limiting for write operations
-const WRITE_COOLDOWN_MS = 10000; // 10 seconds
-let lastWriteTime = 0;
-
-// Prompt patterns used for detection
-const PROMPT_PATTERNS = [
-  /[$#]\s*$/,           // Standard $ or # prompt at end
-  />\s*$/,              // > prompt (PowerShell, some shells)
-  /\]\s*$/,             // ] prompt (some custom prompts)
-  /bash-\d+\.\d+[$#]/,  // bash-X.Y$ format
-];
-
-// Dangerous interactive prompts that require user input
-const DANGER_PATTERNS = [
-  /password:/i, /\[y\/n\]/i, /\[yes\/no\]/i, /Are you sure/i,
-  /Do you want/i, /Continue\?/i, /sudo.*password/i
-];
-
-// Check if line looks like a shell prompt
-function isPromptLine(line: string): boolean {
-  for (const pattern of PROMPT_PATTERNS) {
-    if (pattern.test(line)) return true;
-  }
-  return false;
-}
-
-// Check if line is a dangerous interactive prompt
-function isDangerousPrompt(line: string): boolean {
-  for (const pattern of DANGER_PATTERNS) {
-    if (pattern.test(line)) return true;
-  }
-  return false;
-}
-
-// Wait for stable prompt - ensures prompt is visible AND unchanged for stabilityTime
-// Returns immediately if dangerous prompt detected
-// Retries for up to maxWaitTime if prompt keeps changing
-async function waitForStablePrompt(
-  target: string,
-  stabilityTime: number = 2000,  // 2s stability required
-  maxWaitTime: number = 10000,   // 10s max wait
-  pollInterval: number = 200     // Check every 200ms
-): Promise<{
-  safe: boolean;
-  warning?: string;
-  last_line?: string;
-  running_process?: string;
-  waited_ms?: number;
-}> {
-  const startTime = Date.now();
-  let lastLine = "";
-  let lastLineTime = 0;
-
-  try {
-    // Get pane info for informational purposes
-    const paneInfo = await getPaneInfo(target);
-    const runningCommand = paneInfo.command;
-
-    while (Date.now() - startTime < maxWaitTime) {
-      const content = await capturePane(target);
-      // Filter out trailing empty lines to find actual prompt (fixes root prompt detection)
-      const currentLine = content.filter(l => l.trim() !== "").pop() || "";
-
-      // Check for dangerous prompts - fail immediately
-      if (isDangerousPrompt(currentLine)) {
-        return {
-          safe: false,
-          warning: `Interactive prompt: "${currentLine.trim()}"`,
-          last_line: currentLine.trim(),
-          running_process: runningCommand,
-          waited_ms: Date.now() - startTime
-        };
-      }
-
-      // Check if this is a prompt line
-      if (isPromptLine(currentLine)) {
-        // If same as last time, check stability
-        if (currentLine === lastLine) {
-          const stableFor = Date.now() - lastLineTime;
-          if (stableFor >= stabilityTime) {
-            // Prompt has been stable for required time - SAFE!
-            return {
-              safe: true,
-              running_process: runningCommand,
-              last_line: currentLine.trim(),
-              waited_ms: Date.now() - startTime
-            };
-          }
-        } else {
-          // Prompt changed, reset stability timer
-          lastLine = currentLine;
-          lastLineTime = Date.now();
-        }
-      } else {
-        // Not a prompt line - reset
-        lastLine = currentLine;
-        lastLineTime = Date.now();
-      }
-
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
-    }
-
-    // Timeout - could not get stable prompt within maxWaitTime
-    return {
-      safe: false,
-      warning: `Session busy - prompt not stable within ${maxWaitTime}ms (last line: "${lastLine.trim()}")`,
-      last_line: lastLine.trim(),
-      running_process: (await getPaneInfo(target)).command,
-      waited_ms: Date.now() - startTime
-    };
-  } catch (error) {
-    return {
-      safe: false,
-      warning: `Cannot verify: ${error}`,
-      waited_ms: Date.now() - startTime
-    };
-  }
-}
-
-// Safety check: detect interactive prompts and running processes before writing
-// IMPORTANT: This function waits for STABLE prompt (unchanged for 2s)
-// If prompt keeps changing, retries for up to 10s before returning BUSY
-async function checkPaneSafety(target: string): Promise<{ safe: boolean; warning?: string; last_line?: string; running_process?: string }> {
-  return await waitForStablePrompt(target, 2000, 10000, 200);
-}
-
-async function tryWrite(target: string, text: string): Promise<{
-  success: boolean;
-  executed?: boolean;
-  rate_limited?: boolean;
-  retry_after_seconds?: number;
-  safety_check: any;
-  error?: string;
-}> {
-  // Safety check first - waits for stable prompt (2s stability, 10s max)
-  const safetyCheck = await checkPaneSafety(target);
-
-  // If not safe, DO NOT send text!
-  if (!safetyCheck.safe) {
-    console.error(`[Write] BLOCKED for ${target}: ${safetyCheck.warning}`);
-    return {
-      success: false,
-      executed: false,
-      safety_check: safetyCheck,
-      error: safetyCheck.warning,
-    };
-  }
-
-  const now = Date.now();
-  const timeSinceLastWrite = now - lastWriteTime;
-
-  // Check rate limit
-  if (timeSinceLastWrite < WRITE_COOLDOWN_MS) {
-    const waitSeconds = Math.ceil((WRITE_COOLDOWN_MS - timeSinceLastWrite) / 1000);
-    console.error(`[Write] Rate limited for ${target}, retry in ${waitSeconds}s`);
-    return {
-      success: false,
-      rate_limited: true,
-      retry_after_seconds: waitSeconds,
-      safety_check: safetyCheck,
-    };
-  }
-
-  // Execute write - only if safe!
-  // Un-escape \n and \r sequences that come as literal strings from JSON
-  const unescapedText = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
-  await sendKeys(target, unescapedText);
-  lastWriteTime = Date.now();
-  console.error(`[Write] Executed for ${target}`);
-
-  return {
-    success: true,
-    executed: true,
-    safety_check: safetyCheck,
-  };
-}
-
-// Fingerprint: last N non-empty lines (robust against trailing empty line variations)
-function contentFingerprint(lines: string[]): string {
-  return lines.filter(l => l.trim() !== "").slice(-5).join("\n");
-}
-
-// Execute command and wait for completion
-async function executeAndWait(
-  target: string,
-  command: string,
-  options: {
-    timeout?: number;
-  } = {}
-): Promise<{
-  success: boolean;
-  output: string[];
-  status: 'completed' | 'timeout' | 'error' | 'incomplete';
-  execution_time_ms: number;
-  prompt_detected: boolean;
-  warning?: string;
-  error?: string;
-}> {
-  const timeout = options.timeout || 10000; // 10s default
-  const startTime = Date.now();
-
-  try {
-    // Safety check - waits for stable prompt (2s stability, 10s max)
-    const safetyCheck = await checkPaneSafety(target);
-    if (!safetyCheck.safe) {
-      return {
-        success: false,
-        output: [],
-        status: 'error',
-        execution_time_ms: Date.now() - startTime,
-        prompt_detected: false,
-        error: safetyCheck.warning,
-      };
-    }
-
-    // Capture initial content for output extraction later
-    const initialContent = await capturePane(target);
-    const initialFP = contentFingerprint(initialContent);
-
-    // Send command
-    await sendCommand(target, command);
-    lastWriteTime = Date.now();
-    console.error(`[MCP execute] Command started: ${command}`);
-
-    // Wait for tmux to process keys (fixes race condition with fast commands)
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Single poll loop: detect content change + wait for stabilization
-    // Completes when: fingerprint differs from initial AND content stable for 200ms
-    let currentContent = await capturePane(target);
-    let lastFP = contentFingerprint(currentContent);
-    let lastChangeTime = Date.now();
-    let stableContent = false;
-    let lastProgressReport = Date.now();
-
-    while (Date.now() - startTime < timeout) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      const newContent = await capturePane(target);
-      const newFP = contentFingerprint(newContent);
-
-      if (newFP !== lastFP) {
-        // Content still changing - reset stability timer
-        lastFP = newFP;
-        lastChangeTime = Date.now();
-        currentContent = newContent;
-      } else if (Date.now() - lastChangeTime >= 200 && newFP !== initialFP) {
-        // Content stable for 200ms AND differs from initial = command completed
-        stableContent = true;
-        currentContent = newContent;
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-        console.error(`[MCP execute] Command COMPLETED in ${elapsed}s`);
-        break;
-      }
-
-      // Progress reporting every 1s
-      const now = Date.now();
-      if (now - lastProgressReport >= 1000) {
-        const elapsed = ((now - startTime) / 1000).toFixed(1);
-        console.error(`[MCP execute] Still running... (${elapsed}s)`);
-        lastProgressReport = now;
-      }
-    }
-
-    if (!stableContent) {
-      currentContent = await capturePane(target);
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-      console.error(`[MCP execute] Timeout after ${elapsed}s, command may still be running`);
-    }
-
-    // --- Output extraction ---
-    // Strategy: find command echo line, take everything after it until prompt
-    let outputLines: string[] = [];
-
-    // Find the command echo line (search from bottom for most recent match)
-    // Use first 40 chars of command to handle long/wrapped commands
-    const cmdSearch = command.substring(0, Math.min(command.length, 40));
-    let cmdLineIndex = -1;
-    for (let i = currentContent.length - 1; i >= 0; i--) {
-      if (currentContent[i].includes(cmdSearch)) {
-        cmdLineIndex = i;
-        break;
-      }
-    }
-
-    if (cmdLineIndex >= 0) {
-      // Everything after command echo
-      outputLines = currentContent.slice(cmdLineIndex + 1);
-    } else {
-      // Fallback: diff-based extraction (find where initial and current diverge)
-      let outputStartIndex = 0;
-      for (let i = 0; i < Math.min(initialContent.length, currentContent.length); i++) {
-        if (initialContent[i] !== currentContent[i]) {
-          outputStartIndex = i;
-          break;
-        }
-      }
-      if (outputStartIndex === 0 && currentContent.length > initialContent.length) {
-        outputStartIndex = initialContent.length;
-      }
-      outputLines = currentContent.slice(outputStartIndex);
-      // Remove command echo if present at start
-      if (outputLines.length > 0 && outputLines[0].includes(cmdSearch)) {
-        outputLines = outputLines.slice(1);
-      }
-    }
-
-    // Remove trailing prompt lines and empty lines
-    while (outputLines.length > 0) {
-      const lastLine = outputLines[outputLines.length - 1];
-      if (lastLine.trim() === "" || isPromptLine(lastLine)) {
-        outputLines.pop();
-      } else {
-        break;
-      }
-    }
-
-    const executionTime = Date.now() - startTime;
-
-    if (stableContent) {
-      return {
-        success: true,
-        output: outputLines,
-        status: 'completed',
-        execution_time_ms: executionTime,
-        prompt_detected: true,
-      };
-    } else {
-      return {
-        success: false,
-        output: outputLines,
-        status: 'incomplete',
-        execution_time_ms: executionTime,
-        prompt_detected: false,
-        warning: `Command may still be running after ${timeout}ms`,
-      };
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return {
-      success: false,
-      output: [],
-      status: 'error',
-      execution_time_ms: Date.now() - startTime,
-      prompt_detected: false,
-      error: errorMessage,
-    };
-  }
-}
+const execFileAsync = promisify(execFile);
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -630,6 +27,43 @@ const __dirname = dirname(__filename);
 const packageJsonPath = join(__dirname, "..", "package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 const VERSION = packageJson.version || "unknown";
+
+// Git version check - stores update notice for first tool call
+let updateNotice: string | null = null;
+let updateCheckDone = false;
+
+async function checkGitVersion(): Promise<void> {
+  const repoDir = join(__dirname, "..");
+  try {
+    // Fetch latest from remote (silent, timeout 10s)
+    await execFileAsync("git", ["-C", repoDir, "fetch", "--quiet"], { timeout: 10000 });
+
+    // Compare local HEAD vs origin/main
+    const { stdout: localHash } = await execFileAsync("git", ["-C", repoDir, "rev-parse", "HEAD"]);
+    const { stdout: remoteHash } = await execFileAsync("git", ["-C", repoDir, "rev-parse", "origin/main"]);
+
+    if (localHash.trim() !== remoteHash.trim()) {
+      // Get remote commit info
+      const { stdout: remoteLog } = await execFileAsync("git", ["-C", repoDir, "log", "--oneline", "HEAD..origin/main"]);
+      const commitCount = remoteLog.trim().split("\n").filter(l => l).length;
+      updateNotice = `[MCP tmux] UPDATE AVAILABLE: ${commitCount} new commit(s) on origin/main. Run: cd ${repoDir} && git pull && npm run build`;
+      console.error(updateNotice);
+    }
+  } catch (_e) {
+    // Git check failed silently - not critical
+  }
+  updateCheckDone = true;
+}
+
+// Inject update notice into first tool response if available
+function consumeUpdateNotice(): string | null {
+  if (updateNotice) {
+    const notice = updateNotice;
+    updateNotice = null;
+    return notice;
+  }
+  return null;
+}
 
 // Create MCP server
 const server = new Server(
@@ -804,8 +238,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "number",
               description: "Timeout in seconds (default: 10, max: 300)",
             },
+            callback_session: {
+              type: "string",
+              description: "Tmux session to notify when command completes (e.g. 'claude-9'). If set and command doesn't finish within timeout, monitoring continues in background and notification is sent via send-keys when done.",
+            },
+            max_monitor: {
+              type: "number",
+              description: "Max background monitoring time in seconds (default: 600). Only used with callback_session.",
+            },
           },
           required: ["session", "command"],
+        },
+      },
+      {
+        name: "list_background_tasks",
+        description: "List all background tasks being monitored. Shows task ID, target session, command, callback target, and elapsed time.",
+        inputSchema: {
+          type: "object",
+          properties: {},
         },
       },
     ],
@@ -816,7 +266,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  // Check for update notice to inject into response
+  const notice = consumeUpdateNotice();
+
   try {
+    // Helper to wrap response with optional update notice
+    const wrapResponse = (content: any[]) => {
+      if (notice) {
+        content.push({ type: "text", text: `\n---\n${notice}` });
+      }
+      return { content };
+    };
+
     switch (name) {
       case "read_tmux_pane": {
         const session = (args as any).session;
@@ -876,21 +337,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_tmux_sessions": {
         const sessions = await listSessions();
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  sessions,
-                  count: sessions.length,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return wrapResponse([
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                sessions,
+                count: sessions.length,
+              },
+              null,
+              2
+            ),
+          },
+        ]);
       }
 
       case "get_pane_info": {
@@ -943,10 +402,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "get_server_version": {
-        // Get __dirname equivalent in ES modules
-        const __filename = fileURLToPath(import.meta.url);
-        const __dirname = dirname(__filename);
-
         // Get modification time of index.js (the built file)
         const distPath = join(__dirname, 'index.js');
         const stats = statSync(distPath);
@@ -1009,9 +464,55 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const command = (args as any).command;
         const timeoutSeconds = (args as any).timeout || 10;
         const timeoutMs = timeoutSeconds * 1000;
+        const callbackSession = (args as any).callback_session;
+        const maxMonitorSeconds = (args as any).max_monitor || 600;
 
         const target = `${session}:${window}.${pane}`;
         const result = await executeAndWait(target, command, { timeout: timeoutMs });
+
+        // If command didn't complete and callback_session is set, start background monitoring
+        if (result.status !== 'completed' && result.status !== 'error' && callbackSession) {
+          const taskId = nextTaskId();
+          // Use just session name - tmux auto-selects active window/pane
+          const callbackTarget = callbackSession;
+          const task: BackgroundTask = {
+            id: taskId,
+            target,
+            command,
+            callbackTarget,
+            startedAt: Date.now() - (result.execution_time_ms || 0),
+            maxWaitMs: maxMonitorSeconds * 1000,
+          };
+          backgroundTasks.set(taskId, task);
+
+          // Fire and forget - don't await
+          monitorAndNotify(task).catch((err) => {
+            console.error(`Background monitor error for ${taskId}:`, err);
+            backgroundTasks.delete(taskId);
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    target,
+                    command,
+                    ...result,
+                    status: "background",
+                    task_id: taskId,
+                    callback_target: callbackTarget,
+                    max_monitor_seconds: maxMonitorSeconds,
+                    message: `Command still running. Monitoring in background. Will notify ${callbackSession} when done.`,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
 
         return {
           content: [
@@ -1022,6 +523,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   target,
                   command,
                   ...result,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      case "list_background_tasks": {
+        const tasks = Array.from(backgroundTasks.values()).map((t) => ({
+          id: t.id,
+          target: t.target,
+          command: t.command,
+          callback_target: t.callbackTarget,
+          started_at: new Date(t.startedAt).toISOString(),
+          running_for_seconds: Math.round((Date.now() - t.startedAt) / 1000),
+          max_wait_seconds: Math.round(t.maxWaitMs / 1000),
+        }));
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  tasks,
+                  count: tasks.length,
                 },
                 null,
                 2
@@ -1054,6 +583,9 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Tmux MCP server running on stdio");
+
+  // Check for updates in background (non-blocking)
+  checkGitVersion().catch(() => {});
 }
 
 main().catch((error) => {
