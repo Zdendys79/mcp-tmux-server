@@ -242,6 +242,26 @@ export async function listSessions(): Promise<SessionInfo[]> {
   }
 }
 
+// Resolve session name from exact match or unambiguous prefix (e.g. "sudo" → "sudo-0")
+export async function resolveSession(nameOrPrefix: string): Promise<string> {
+  const sessions = await listSessions();
+  const names = sessions.map(s => s.name);
+
+  // Exact match wins immediately
+  if (names.includes(nameOrPrefix)) return nameOrPrefix;
+
+  // Prefix match: names starting with "prefix-"
+  const matches = names.filter(n => n.startsWith(`${nameOrPrefix}-`));
+
+  if (matches.length === 0) {
+    const available = names.length ? names.join(", ") : "(no sessions)";
+    throw new Error(`Session "${nameOrPrefix}" not found. Available: ${available}`);
+  }
+  if (matches.length === 1) return matches[0];
+
+  throw new Error(`Ambiguous prefix "${nameOrPrefix}" matches: ${matches.join(", ")}. Use the full session name.`);
+}
+
 // Create new tmux session with auto-increment naming
 export async function createSessionWithAutoIncrement(
   prefix: string = "session",

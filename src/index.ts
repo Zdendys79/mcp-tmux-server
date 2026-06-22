@@ -15,7 +15,7 @@ import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-import { execTmux, capturePane, getPaneInfo, sendKeys, listSessions, createSessionWithAutoIncrement } from "./tmux.js";
+import { execTmux, capturePane, getPaneInfo, sendKeys, listSessions, createSessionWithAutoIncrement, resolveSession } from "./tmux.js";
 import { tryWrite, executeAndWait } from "./execute.js";
 import { BackgroundTask, backgroundTasks, nextTaskId, monitorAndNotify } from "./background.js";
 
@@ -280,7 +280,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     switch (name) {
       case "read_tmux_pane": {
-        const session = (args as any).session;
+        const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
 
@@ -307,7 +307,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "insert_tmux_pane_text": {
-        const session = (args as any).session;
+        const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
         const text = (args as any).text;
@@ -353,7 +353,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "get_pane_info": {
-        const session = (args as any).session;
+        const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
 
@@ -431,7 +431,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "send_keys_tmux": {
-        const session = (args as any).session;
+        const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
         const keys = (args as any).keys;
@@ -458,7 +458,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "execute": {
-        const session = (args as any).session;
+        const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
         const command = (args as any).command;
