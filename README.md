@@ -16,6 +16,7 @@ Without tmux, the `execute` tool still works for short commands (synchronous mod
 
 ## Features
 
+- **Session prefix resolution** - use short prefix instead of full name (e.g. `sudo` → `sudo-0`); ambiguous prefix returns error with candidates
 - **Synchronous execution** - blocks until command completes (up to 10s default)
 - **Background monitoring with callback** - long-running commands are monitored asynchronously; notification sent when done
 - **Quiet callback delivery** - waits 10s of inactivity before sending, never interrupts user typing

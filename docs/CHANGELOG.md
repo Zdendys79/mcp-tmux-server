@@ -2,6 +2,9 @@
 
 **Version Format:** `vYYYY-MM-DD build HHMMSS`
 
+## v2026-06-22
+- **Session prefix resolution** - All tools now accept session name prefix (e.g. `sudo` → `sudo-0`). Exact match wins; single prefix match is auto-resolved; multiple matches return error with candidates list.
+
 ## v2026-02-26
 - **Module split** - Refactored monolithic `index.ts` (1282 lines) into 5 modules: `tmux.ts`, `prompt.ts`, `execute.ts`, `background.ts`, `index.ts`
 - **Background task monitoring** - `execute` tool now supports `callback_session` parameter for async monitoring of long-running commands

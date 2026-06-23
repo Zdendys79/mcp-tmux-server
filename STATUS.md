@@ -1,6 +1,6 @@
 # MCP TMUX Server (TypeScript) - Status
 
-**Date:** 2026-02-15
+**Date:** 2026-06-23
 **Status:** ✅ **Production-ready, active development**
 
 ---
@@ -109,6 +109,9 @@ All critical improvements from the Python prototype have been successfully porte
 6. **`get_pane_info`** - Get pane details
 7. **`create_session`** - Create new session with auto-increment naming
 8. **`get_server_version`** - Get server version (date-based)
+
+All session-based tools support **prefix resolution**: pass `sudo` instead of `sudo-0`.
+Exact match wins; single prefix match auto-resolves; ambiguous prefix returns error with candidates.
 
 ---
 
