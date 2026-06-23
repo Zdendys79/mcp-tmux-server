@@ -250,8 +250,8 @@ export async function resolveSession(nameOrPrefix: string): Promise<string> {
   // Exact match wins immediately
   if (names.includes(nameOrPrefix)) return nameOrPrefix;
 
-  // Prefix match: names starting with "prefix-"
-  const matches = names.filter(n => n.startsWith(`${nameOrPrefix}-`));
+  // Prefix match: names starting with the given prefix
+  const matches = names.filter(n => n.startsWith(nameOrPrefix));
 
   if (matches.length === 0) {
     const available = names.length ? names.join(", ") : "(no sessions)";
