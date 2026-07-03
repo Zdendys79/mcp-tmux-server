@@ -12,7 +12,7 @@ tmux new -s claude
 claude   # start Claude Code inside the tmux session
 ```
 
-Without tmux, the `execute` tool still works for short commands (synchronous mode), but background monitoring callbacks cannot be delivered. If callback delivery fails, an error message is printed in the source tmux session where the command was running.
+Without tmux, `run_wait` still works for short commands (synchronous mode), but `run_background`'s callback cannot be delivered. If callback delivery fails, an error message is printed in the source tmux session where the command was running.
 
 ## Features
 
@@ -62,29 +62,32 @@ Enable write mode in `~/.config/mcp-tmux/config.json`:
 ## Quick Start
 
 ```typescript
-// Short command - synchronous
-const result = await execute({session: "work", command: "ls -la"});
+// Short command - blocks and returns the result directly. Hard-capped at 120s no matter what
+// `timeout` you pass, so a units mistake (seconds vs ms) can never turn this into an hours-long
+// block -- if a command might take longer, use run_background instead.
+const result = await run_wait({session: "work", command: "ls -la"});
 
-// Long command - background monitoring with callback
-const result = await execute({
+// Long-running / never-returning command - does NOT block. Sends the command, waits a short
+// grace period to catch immediate failures, then returns control immediately either way.
+const result = await run_background({
   session: "base7",
   command: "sudo apt upgrade -y",
-  timeout: 10,
-  callback_session: "claude-9",
-  max_monitor: 600
+  callback_session: "claude-9",   // REQUIRED: where to deliver the "done" notification
+  max_monitor: 600                // raise for multi-hour jobs, e.g. 14400 = 4h
 });
 // Returns immediately with status: "background"
-// Notification sent to claude-9 session when done
+// Notification (with output) sent to claude-9 session whenever the command actually finishes
 ```
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `execute` | Execute command and wait (sync) or monitor (async with callback) |
+| `run_wait` | Run a SHORT command and block for the result (hard-capped at 120s) |
+| `run_background` | Run a LONG-RUNNING command WITHOUT blocking; notifies `callback_session` when done |
 | `read_tmux_pane` | Read current terminal content (always fresh) |
-| `insert_tmux_pane_text` | Type text into editors/prompts (NOT for commands) |
-| `send_keys_tmux` | Send keyboard shortcuts (Ctrl+C, arrows, etc.) |
+| `type_text` | Type text into editors/prompts (NOT for commands) |
+| `send_key` | Send keyboard shortcuts (Ctrl+C, arrows, etc.) |
 | `get_tmux_sessions` | List all active tmux sessions with status |
 | `get_pane_info` | Get pane dimensions, running command |
 | `list_background_tasks` | List active background task monitors |

@@ -106,8 +106,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "insert_tmux_pane_text",
-        description: "⚠️ WARNING: This tool is for TYPING TEXT ONLY (like into vim/nano).\n⚠️ For executing commands (bash, SQL, Python), use execute instead!\n\nUse cases for this tool:\n- Typing text into an editor (vim, nano)\n- Entering input into interactive prompts\n- Sending text that should NOT be executed immediately",
+        name: "type_text",
+        description: "⚠️ WARNING: This tool is for TYPING TEXT ONLY (like into vim/nano).\n⚠️ For executing commands (bash, SQL, Python), use run_wait (short, blocks for result) or run_background (long-running, notifies a callback session when done) instead!\n\nUse cases for this tool:\n- Typing text into an editor (vim, nano)\n- Entering input into interactive prompts\n- Sending text that should NOT be executed immediately",
         inputSchema: {
           type: "object",
           properties: {
@@ -187,7 +187,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "send_keys_tmux",
+        name: "send_key",
         description: "Send keyboard shortcuts to tmux pane. Use for Ctrl+C, Ctrl+D, arrows, function keys.\n\nSupported keys:\n- Control: C-c, C-u, C-k, C-w, C-a, C-e, C-l, C-d, C-z\n- Special: Enter, Escape, Tab, BSpace, Space\n- Arrows: Up, Down, Left, Right\n- Function: F1-F12",
         inputSchema: {
           type: "object",
@@ -213,8 +213,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "execute",
-        description: "Execute command and WAIT for completion - DO NOT respond to user before tool returns!\n\n⚠️ CRITICAL: This tool BLOCKS until command completes (up to 10s default).\n⚠️ DO NOT write any response to user until this tool returns with results!\n⚠️ The tool WILL wait - you don't need to say \"command is running, I'll wait\".\n⚠️ Just call the tool and WAIT SILENTLY for results, then report them.",
+        name: "run_wait",
+        description: "Run a SHORT command and WAIT (block) for it to finish, then return its output directly - DO NOT respond to user before this tool returns!\n\n⚠️ CRITICAL: This tool BLOCKS the whole call until the command completes OR `timeout` elapses (default 10s, HARD-CAPPED at 120s server-side no matter what you pass -- units are SECONDS, not ms).\n⚠️ ONLY for commands you expect to finish in well under a minute (ls, git status, a quick script, a quick test). If a command might run for MINUTES/HOURS or never returns a prompt (a server holder, a training/recording loop, anything with an infinite loop) -- use run_background instead, NEVER this tool. This tool WILL still be blocking at the 120s cap even for a command that runs for hours; it will not magically become non-blocking.\n⚠️ DO NOT write any response to the user until this tool returns with results! Just call it and wait silently, then report the output.",
         inputSchema: {
           type: "object",
           properties: {
@@ -232,22 +232,52 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             command: {
               type: "string",
-              description: "Command to execute",
+              description: "Command to run",
             },
             timeout: {
               type: "number",
-              description: "Timeout in seconds (default: 10, max: 300)",
-            },
-            callback_session: {
-              type: "string",
-              description: "Tmux session to notify when command completes (e.g. 'claude-9'). If set and command doesn't finish within timeout, monitoring continues in background and notification is sent via send-keys when done.",
-            },
-            max_monitor: {
-              type: "number",
-              description: "Max background monitoring time in seconds (default: 600). Only used with callback_session.",
+              description: "Timeout in SECONDS (default: 10). Hard-capped at 120 regardless of what you pass -- for anything that might take longer, use run_background instead.",
             },
           },
           required: ["session", "command"],
+        },
+      },
+      {
+        name: "run_background",
+        description: "Run a LONG-RUNNING or NEVER-RETURNING command WITHOUT blocking: send it, wait a short grace period to catch immediate failures, then return control to you immediately. When the command actually finishes (even hours later), a notification with its output is sent into `callback_session` -- you do NOT need to poll; just continue other work and react when the notification arrives (or check in with read_tmux_pane / list_background_tasks any time).\n\n✅ Use this for: server holders that run forever, training/recording scripts, anything measured in minutes+ or with no guaranteed end. This is the tool that does NOT make you wait.\n⚠️ callback_session is REQUIRED -- pick the session where you (Claude) are actually running, so the 'done' notification reaches you.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            session: {
+              type: "string",
+              description: "Tmux session name where the command will run",
+            },
+            window: {
+              type: "number",
+              description: "Window index (default: 0)",
+            },
+            pane: {
+              type: "number",
+              description: "Pane index (default: 0)",
+            },
+            command: {
+              type: "string",
+              description: "Command to run",
+            },
+            callback_session: {
+              type: "string",
+              description: "REQUIRED: tmux session to notify when the command completes (e.g. your own Claude session, 'fa-claude-4'). The notification (with output) is delivered via send-keys when the command's prompt returns.",
+            },
+            grace_seconds: {
+              type: "number",
+              description: "Short initial blocking window in seconds to catch fast failures before switching to background monitoring (default: 10).",
+            },
+            max_monitor: {
+              type: "number",
+              description: "Max background monitoring time in seconds before giving up and notifying a timeout (default: 600 = 10 min; raise this for multi-hour jobs, e.g. 14400 = 4h).",
+            },
+          },
+          required: ["session", "command", "callback_session"],
         },
       },
       {
@@ -306,7 +336,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      case "insert_tmux_pane_text": {
+      case "type_text": {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
@@ -430,7 +460,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      case "send_keys_tmux": {
+      case "send_key": {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
@@ -457,62 +487,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      case "execute": {
+      case "run_wait": {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
         const command = (args as any).command;
-        const timeoutSeconds = (args as any).timeout || 10;
+        // HARD CAP at 120s no matter what's requested: run_wait must NEVER be able to block for
+        // hours because of a units mistake (seconds vs ms) or a caller misjudging how long a
+        // command will take. Anything that needs longer belongs in run_background.
+        const requestedSeconds = (args as any).timeout || 10;
+        const timeoutSeconds = Math.min(requestedSeconds, 120);
         const timeoutMs = timeoutSeconds * 1000;
-        const callbackSession = (args as any).callback_session;
-        const maxMonitorSeconds = (args as any).max_monitor || 600;
 
         const target = `${session}:${window}.${pane}`;
         const result = await executeAndWait(target, command, { timeout: timeoutMs });
-
-        // If command didn't complete and callback_session is set, start background monitoring
-        if (result.status !== 'completed' && result.status !== 'error' && callbackSession) {
-          const taskId = nextTaskId();
-          // Use just session name - tmux auto-selects active window/pane
-          const callbackTarget = callbackSession;
-          const task: BackgroundTask = {
-            id: taskId,
-            target,
-            command,
-            callbackTarget,
-            startedAt: Date.now() - (result.execution_time_ms || 0),
-            maxWaitMs: maxMonitorSeconds * 1000,
-          };
-          backgroundTasks.set(taskId, task);
-
-          // Fire and forget - don't await
-          monitorAndNotify(task).catch((err) => {
-            console.error(`Background monitor error for ${taskId}:`, err);
-            backgroundTasks.delete(taskId);
-          });
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    target,
-                    command,
-                    ...result,
-                    status: "background",
-                    task_id: taskId,
-                    callback_target: callbackTarget,
-                    max_monitor_seconds: maxMonitorSeconds,
-                    message: `Command still running. Monitoring in background. Will notify ${callbackSession} when done.`,
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
-          };
-        }
 
         return {
           content: [
@@ -523,6 +511,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   target,
                   command,
                   ...result,
+                  ...(requestedSeconds > 120
+                    ? { note: `timeout clamped from ${requestedSeconds}s to the 120s hard cap -- use run_background for anything longer` }
+                    : {}),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      case "run_background": {
+        const session = await resolveSession((args as any).session);
+        const window = (args as any).window || 0;
+        const pane = (args as any).pane || 0;
+        const command = (args as any).command;
+        const callbackSession = (args as any).callback_session;
+        const graceSeconds = (args as any).grace_seconds || 10;
+        const maxMonitorSeconds = (args as any).max_monitor || 600;
+
+        const target = `${session}:${window}.${pane}`;
+        // Short blocking grace period ONLY -- long enough to catch a command that fails
+        // immediately (typo, missing file, instant error) so the caller doesn't have to wait for
+        // a background notification just to learn the command never even started.
+        const result = await executeAndWait(target, command, { timeout: graceSeconds * 1000 });
+
+        // Finished (or errored) within the grace period -- no need for background monitoring.
+        if (result.status === 'completed' || result.status === 'error') {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ target, command, ...result }, null, 2),
+              },
+            ],
+          };
+        }
+
+        // Still running after the grace period -- hand off to background monitoring and return
+        // control immediately. The notification (with output) lands in callback_session whenever
+        // the command actually finishes, no matter how long that takes.
+        const taskId = nextTaskId();
+        const task: BackgroundTask = {
+          id: taskId,
+          target,
+          command,
+          callbackTarget: callbackSession,
+          startedAt: Date.now() - (result.execution_time_ms || 0),
+          maxWaitMs: maxMonitorSeconds * 1000,
+        };
+        backgroundTasks.set(taskId, task);
+
+        // Fire and forget - don't await
+        monitorAndNotify(task).catch((err) => {
+          console.error(`Background monitor error for ${taskId}:`, err);
+          backgroundTasks.delete(taskId);
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  target,
+                  command,
+                  ...result,
+                  status: "background",
+                  task_id: taskId,
+                  callback_target: callbackSession,
+                  max_monitor_seconds: maxMonitorSeconds,
+                  message: `Command still running after ${graceSeconds}s. NOT blocking further -- monitoring in background, will notify ${callbackSession} when done (or after ${maxMonitorSeconds}s).`,
                 },
                 null,
                 2

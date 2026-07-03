@@ -2,6 +2,20 @@
 
 **Version Format:** `vYYYY-MM-DD build HHMMSS`
 
+## v2026-07-03
+- **Split `execute` into `run_wait` and `run_background`** (unmistakable naming, requested after a
+  consuming Claude session repeatedly used the blocking tool for multi-hour commands and appeared
+  frozen for the whole duration): `run_wait` is the short, blocking tool -- HARD-CAPPED at 120s
+  server-side regardless of the `timeout` argument, so a units mistake (seconds vs ms) or a
+  misjudged duration can never turn it into an hours-long block. `run_background` is the
+  non-blocking tool for long-running/never-returning commands -- `callback_session` is now
+  REQUIRED (was optional on `execute`), and it always returns after a short `grace_seconds` window
+  (default 10s) instead of only falling back to background monitoring after the full timeout.
+- **Renamed for clarity/consistency:** `insert_tmux_pane_text` -> `type_text`, `send_keys_tmux` ->
+  `send_key`.
+- Consuming clients must reconnect (Claude Code: `/mcp` or restart) to see the new tool names --
+  the old names no longer exist.
+
 ## v2026-06-22
 - **Session prefix resolution** - All tools now accept session name prefix (e.g. `sudo` → `sudo-0`). Exact match wins; single prefix match is auto-resolved; multiple matches return error with candidates list.
 

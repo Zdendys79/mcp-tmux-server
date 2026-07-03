@@ -2,23 +2,21 @@
 
 Complete reference for all tools provided by the MCP Tmux Server.
 
-## `execute` - Execute command and wait for completion
+## `run_wait` - Run a SHORT command and block for the result
 
-**CRITICAL:** This tool BLOCKS until command completes. Do NOT respond to user before tool returns!
+**CRITICAL:** This tool BLOCKS until the command completes or the timeout elapses. Do NOT respond to user before tool returns! Timeout is HARD-CAPPED at 120s server-side no matter what you pass -- it can never block for hours because of a units mistake or misjudged duration. If a command might take longer than ~1 minute, or never returns a prompt (a server holder, an infinite loop), use `run_background` instead.
 
 **Description:**
-Executes command in tmux pane and waits synchronously for completion (up to 10 seconds by default). Returns all command output. Progress is reported to STDERR during execution. If `callback_session` is set and command exceeds timeout, monitoring continues in background.
+Runs a command in a tmux pane and waits synchronously for completion (up to 10 seconds by default, 120s hard cap). Returns all command output. Progress is reported to STDERR during execution.
 
 **Parameters:**
 - `session` (string, required) - Tmux session name
-- `command` (string, required) - Command to execute
+- `command` (string, required) - Command to run
 - `window` (int, default: 0) - Window index
 - `pane` (int, default: 0) - Pane index
-- `timeout` (int, default: 10, max: 300) - Timeout in seconds
-- `callback_session` (string, optional) - Tmux session to notify when command completes (e.g. `claude-9`). If set and command doesn't finish within timeout, monitoring continues in background and notification is sent via `tmux send-keys` when done.
-- `max_monitor` (int, default: 600) - Max background monitoring time in seconds. Only used with `callback_session`.
+- `timeout` (int, default: 10, HARD CAP 120) - Timeout in seconds
 
-**Returns (completed):**
+**Returns:**
 ```json
 {
   "target": "session-1:0.0",
@@ -31,7 +29,30 @@ Executes command in tmux pane and waits synchronously for completion (up to 10 s
 }
 ```
 
-**Returns (background - command still running):**
+**Example:**
+```typescript
+const result = await run_wait({session: "work", command: "ls -la"});
+```
+
+---
+
+## `run_background` - Run a LONG-RUNNING command WITHOUT blocking
+
+**Description:**
+Sends a command, waits a short grace period (default 10s) to catch immediate failures, then returns control immediately either way -- it does NOT wait for the command to finish. `callback_session` is REQUIRED: when the command's prompt actually returns (even hours later), a notification with its output is delivered there via `tmux send-keys`. Use this for server holders, training/recording loops, or anything that runs for minutes+ or never returns on its own.
+
+**Parameters:**
+- `session` (string, required) - Tmux session name where the command will run
+- `command` (string, required) - Command to run
+- `callback_session` (string, **required**) - Tmux session to notify when the command completes (e.g. `claude-9`)
+- `window` (int, default: 0) - Window index
+- `pane` (int, default: 0) - Pane index
+- `grace_seconds` (int, default: 10) - Short initial blocking window to catch fast failures
+- `max_monitor` (int, default: 600) - Max background monitoring time in seconds before giving up (raise for multi-hour jobs, e.g. 14400 = 4h)
+
+**Returns (finished within the grace period):** same shape as `run_wait`'s result.
+
+**Returns (still running after the grace period):**
 ```json
 {
   "target": "base7-19:0.0",
@@ -40,7 +61,7 @@ Executes command in tmux pane and waits synchronously for completion (up to 10 s
   "task_id": "bg-1",
   "callback_target": "claude-9",
   "max_monitor_seconds": 600,
-  "message": "Command still running. Monitoring in background. Will notify claude-9 when done."
+  "message": "Command still running after 10s. NOT blocking further -- monitoring in background, will notify claude-9 when done (or after 600s)."
 }
 ```
 
@@ -55,14 +76,9 @@ Output:
 
 **Example:**
 ```typescript
-// Short command - synchronous, blocks until done
-const result = await execute({session: "work", command: "ls -la"});
-
-// Long command - returns immediately, notifies when done
-const result = await execute({
+const result = await run_background({
   session: "base7",
   command: "sudo apt upgrade -y",
-  timeout: 10,
   callback_session: "claude-9",
   max_monitor: 600
 });
@@ -98,9 +114,9 @@ Reads FRESH content from tmux pane - NO CACHING, always returns current state. U
 
 ---
 
-## `insert_tmux_pane_text` - Type text into pane
+## `type_text` - Type text into pane
 
-**WARNING:** This tool is for TYPING TEXT ONLY (like into vim/nano). For executing commands, use `execute` instead!
+**WARNING:** This tool is for TYPING TEXT ONLY (like into vim/nano). For running commands, use `run_wait` (short, blocks for result) or `run_background` (long-running, notifies when done) instead!
 
 **Description:**
 Simulates typing text into tmux pane. Does NOT wait for completion or capture output. Use only for interactive text input (editors, prompts), NOT for command execution.
@@ -113,7 +129,7 @@ Simulates typing text into tmux pane. Does NOT wait for completion or capture ou
 
 ---
 
-## `send_keys_tmux` - Send keyboard shortcuts
+## `send_key` - Send keyboard shortcuts
 
 **Description:**
 Sends special keys and keyboard shortcuts to tmux pane. Use for control keys, arrows, function keys.
