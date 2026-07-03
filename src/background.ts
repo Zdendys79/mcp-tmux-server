@@ -61,7 +61,16 @@ export async function waitForQuietCallback(callbackTarget: string, quietMs: numb
 export async function deliverCallback(callbackTarget: string, msg: string, sourceTarget?: string): Promise<void> {
   try {
     await waitForQuietCallback(callbackTarget);
-    await sendKeys(callbackTarget, msg + "\n");
+    // sendKeys' -l (literal) mode still sends EMBEDDED newlines in `msg` as literal
+    // Enter keystrokes, so a multi-line notification gets typed into the target pane as
+    // several separate Enter-terminated "commands", not one blob. If any line contains
+    // an unmatched quote (very common in captured command output, e.g. Python dict repr
+    // like {'iron-plate': 140}), bash starts an open quote/continuation and the pane gets
+    // stuck at a "> " prompt until someone notices and sends Ctrl+C. Prefixing every line
+    // with "# " makes each one an independent, harmless shell comment regardless of its
+    // content, so this can never happen (observed live repeatedly, 2026-07-03).
+    const commented = msg.split("\n").map((line) => `# ${line}`).join("\n");
+    await sendKeys(callbackTarget, commented + "\n");
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     // Escape single quotes for safe echo in bash
