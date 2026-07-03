@@ -1,6 +1,6 @@
 {
   "name": "tmux-mcp-server",
-  "version": "faceniroluka",
+  "version": "faceyigowuwa",
   "description": "MCP server for real-time tmux terminal interaction",
   "main": "dist/index.js",
   "type": "module",
