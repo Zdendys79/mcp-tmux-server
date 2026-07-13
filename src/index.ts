@@ -21,6 +21,18 @@ import { BackgroundTask, backgroundTasks, nextTaskId, monitorAndNotify } from ".
 
 const execFileAsync = promisify(execFile);
 
+// Validate a required string argument before it reaches tmux/spawn. Without this,
+// a missing arg (e.g. a malformed tool call) silently becomes the literal string
+// "undefined" once it hits child_process.spawn's argv, which tmux then types into
+// the pane as real keystrokes instead of failing loudly.
+function requireStringArg(args: any, key: string, toolName: string): string {
+  const value = args?.[key];
+  if (typeof value !== "string") {
+    throw new Error(`Missing required argument "${key}" for tool "${toolName}"`);
+  }
+  return value;
+}
+
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -340,7 +352,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
-        const text = (args as any).text;
+        const text = requireStringArg(args, "text", "type_text");
 
         const target = `${session}:${window}.${pane}`;
         const result = await tryWrite(target, text);
@@ -464,7 +476,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
-        const keys = (args as any).keys;
+        const keys = requireStringArg(args, "keys", "send_key");
 
         const target = `${session}:${window}.${pane}`;
         await execTmux(["send-keys", "-t", target, keys]);
@@ -491,7 +503,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
-        const command = (args as any).command;
+        const command = requireStringArg(args, "command", "run_wait");
         // HARD CAP at 120s no matter what's requested: run_wait must NEVER be able to block for
         // hours because of a units mistake (seconds vs ms) or a caller misjudging how long a
         // command will take. Anything that needs longer belongs in run_background.
@@ -527,8 +539,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const session = await resolveSession((args as any).session);
         const window = (args as any).window || 0;
         const pane = (args as any).pane || 0;
-        const command = (args as any).command;
-        const callbackSession = (args as any).callback_session;
+        const command = requireStringArg(args, "command", "run_background");
+        const callbackSession = requireStringArg(args, "callback_session", "run_background");
         const graceSeconds = (args as any).grace_seconds || 10;
         const maxMonitorSeconds = (args as any).max_monitor || 600;
 
