@@ -1,7 +1,7 @@
 // Background task monitoring with async callbacks to Claude session
 
-import { capturePane, sendKeys, sendCommand } from "./tmux.js";
-import { isPromptLine, contentFingerprint } from "./prompt.js";
+import { capturePane, getCursor, sendKeys, sendCommand } from "./tmux.js";
+import { isPromptLine, contentFingerprint, claudeInputState } from "./prompt.js";
 
 // Background task definition
 export interface BackgroundTask {
@@ -28,7 +28,13 @@ export function fmtTime(ms: number): string {
 }
 
 // Wait until callback pane is quiet (no typing) for at least quietMs
-// This prevents interrupting user while they're typing a prompt
+// This prevents interrupting user while they're typing a prompt.
+// Quiet alone is NOT enough (2026-10-23, Zdendys live-caught): pausing for 10s
+// mid-sentence let a notification get appended to his half-written Claude Code prompt
+// and its trailing Enter submitted the merged text. So in a Claude Code pane we also
+// require the input box to be empty -- a draft keeps the notification waiting until
+// the user submits or clears it (notifications are never urgent; a hijacked prompt is
+// worse than a late one). Panes without a Claude input box keep the old quiet-only rule.
 export async function waitForQuietCallback(callbackTarget: string, quietMs: number = 10000): Promise<void> {
   let lastFP = "";
   let lastChangeTime = Date.now();
@@ -43,8 +49,9 @@ export async function waitForQuietCallback(callbackTarget: string, quietMs: numb
         lastFP = fp;
         lastChangeTime = Date.now();
       } else if (Date.now() - lastChangeTime >= quietMs) {
-        // Quiet for long enough - safe to send
-        return;
+        // Quiet for long enough - safe to send, unless the user has a draft typed
+        const cursor = await getCursor(callbackTarget).catch(() => undefined);
+        if (claudeInputState(lines, cursor) !== "draft") return;
       }
     } catch (_e) {
       // Can't read pane - send anyway

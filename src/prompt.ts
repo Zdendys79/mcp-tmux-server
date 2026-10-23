@@ -32,6 +32,42 @@ export function isDangerousPrompt(line: string): boolean {
   return false;
 }
 
+// Claude Code TUI input box state, from a plain capture-pane snapshot + the real cursor.
+// The box is a "❯ " line (older versions: "> ") framed by two "────" rule lines, with the
+// status bar below the bottom rule:
+//   ────────────────
+//   ❯ typed text...
+//   ────────────────
+//     ⏵⏵ bypass permissions on ...
+// Returns "none" (no Claude input box -- e.g. a plain shell pane), "empty", or "draft"
+// (the user has text typed in the box). An empty box can still show a grey prompt
+// SUGGESTION after "❯ ", which a plain capture can't tell apart from typed text -- but
+// Claude Code parks the real terminal cursor at the input caret, so with only a
+// suggestion the cursor sits right after "❯ " on the prompt row.
+export function claudeInputState(
+  lines: string[],
+  cursor?: { x: number; y: number }
+): "none" | "empty" | "draft" {
+  const isRule = (l: string) => /^\s*─{10,}\s*$/.test(l);
+  let bottom = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (isRule(lines[i])) { bottom = i; break; }
+  }
+  if (bottom < 0) return "none";
+  let top = -1;
+  for (let i = bottom - 1; i >= 0; i--) {
+    if (isRule(lines[i])) { top = i; break; }
+  }
+  if (top < 0 || bottom - top < 2) return "none";
+  const promptRow = top + 1;
+  const m = lines[promptRow].match(/^(\s*[❯>]\s?)(.*)$/);
+  if (!m) return "none";
+  if (bottom - top > 2) return "draft";  // multi-line text in the box
+  if (m[2].trim() === "") return "empty";
+  if (cursor && cursor.y === promptRow && cursor.x <= m[1].length) return "empty";  // suggestion only
+  return "draft";
+}
+
 // Fingerprint: last N non-empty lines (robust against trailing empty line variations)
 export function contentFingerprint(lines: string[]): string {
   return lines.filter(l => l.trim() !== "").slice(-5).join("\n");

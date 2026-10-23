@@ -13,6 +13,22 @@ All critical improvements from the Python prototype have been successfully porte
 
 ---
 
+## ✅ 2026-10-23: run_background callbacks no longer hijack a half-typed prompt
+
+**Problem (Zdendys live-caught):** `waitForQuietCallback` only waited for 10s of
+unchanged pane content. Pausing mid-sentence in the Claude Code prompt was enough --
+the notification got appended to the draft and its trailing Enter submitted the
+merged text.
+
+**Fix:** in a pane with a Claude Code input box (`❯ ` line framed by `────` rules),
+delivery additionally requires the box to be empty (`claudeInputState` in
+`prompt.ts`). A grey prompt *suggestion* is told apart from typed text via the real
+terminal cursor (`getCursor` in `tmux.ts`): Claude Code parks it at the input caret,
+so a suggestion-only box has the cursor right after `❯ `. A draft keeps the
+notification waiting until the user submits/clears it. Panes without an input box
+(plain shells) keep the old quiet-only behavior. Verified: 7 offline fixtures + the
+live `cl-factorio-ai-5` pane. Takes effect after an MCP reconnect (`/mcp`).
+
 ## ✅ Completed Improvements
 
 ### 1. ✅ No Caching - Always Fresh Content

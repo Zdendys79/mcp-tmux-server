@@ -42,6 +42,13 @@ export async function capturePane(target: string): Promise<string[]> {
   return lines;
 }
 
+// Get the pane's real terminal cursor position (0-based, relative to the visible area)
+export async function getCursor(target: string): Promise<{ x: number; y: number }> {
+  const output = await execTmux(["display-message", "-t", target, "-p", "#{cursor_x},#{cursor_y}"]);
+  const [x, y] = output.trim().split(",").map((v) => parseInt(v));
+  return { x, y };
+}
+
 // Get detailed pane information
 export async function getPaneInfo(
   target: string
