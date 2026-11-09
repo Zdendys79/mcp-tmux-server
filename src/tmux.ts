@@ -2,10 +2,21 @@
 
 import { spawn } from "child_process";
 
+// tmux parses its argv like a command line: an argument ending in ";" ends the
+// current command and the ";" is DROPPED -- even for `send-keys -l`. So
+// "SELECT 1;" was typed as "SELECT 1" (MariaDB, PowerShell, ...), and an
+// argument ending in backslash+";" lost the backslash ("find . -exec rm {} \;"
+// was typed as "... {} ;"). tmux's own escape is ONE backslash before the final
+// ";" (it consumes exactly that backslash and keeps the ";"), so replacing the
+// final ";" with backslash+";" round-trips every string (verified on tmux 3.6).
+export function escapeTmuxArg(arg: string): string {
+  return arg.endsWith(";") ? arg.slice(0, -1) + "\\;" : arg;
+}
+
 // Execute tmux command and return stdout
 export async function execTmux(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("tmux", args);
+    const proc = spawn("tmux", args.map(escapeTmuxArg));
     let stdout = "";
     let stderr = "";
 
@@ -75,26 +86,17 @@ export async function getPaneInfo(
 }
 
 // Send text literally to pane (handles newlines, semicolons)
+// Trailing ";" is safe here: execTmux escapes it (see escapeTmuxArg).
 export async function sendKeys(target: string, text: string): Promise<void> {
   // Check if text ends with newline
   const hasNewline = text.endsWith('\n') || text.endsWith('\r\n');
 
   // Remove newline from text if present
-  let cleanText = hasNewline ? text.replace(/[\r\n]+$/, '') : text;
-
-  // WORKAROUND: tmux send-keys strips trailing semicolons even with -l flag!
-  // Solution: If text ends with semicolon, send it separately
-  const hasSemicolon = cleanText.endsWith(';');
-  if (hasSemicolon) {
-    cleanText = cleanText.slice(0, -1); // Remove trailing semicolon
-  }
+  const cleanText = hasNewline ? text.replace(/[\r\n]+$/, '') : text;
 
   // Send text literally (without interpreting special characters)
-  await execTmux(["send-keys", "-t", target, "-l", cleanText]);
-
-  // Send semicolon separately if needed (WITHOUT -l flag to avoid tmux stripping it)
-  if (hasSemicolon) {
-    await execTmux(["send-keys", "-t", target, "\\;"]);
+  if (cleanText !== "") {
+    await execTmux(["send-keys", "-t", target, "-l", cleanText]);
   }
 
   // If original text had newline, send Enter key separately

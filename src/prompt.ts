@@ -24,6 +24,37 @@ export function isPromptLine(line: string): boolean {
   return false;
 }
 
+// Interactive shells as reported by tmux #{pane_current_command}
+const SHELL_COMMANDS = new Set([
+  "bash", "sh", "dash", "zsh", "fish", "ksh", "mksh", "tcsh", "csh",
+  "pwsh", "powershell", "cmd",
+]);
+
+export function isShellCommand(cmd: string): boolean {
+  const base = cmd.trim().replace(/^-/, "").split("/").pop() || "";
+  return SHELL_COMMANDS.has(base.toLowerCase().replace(/\.exe$/, ""));
+}
+
+// Has the command we started really ended? A prompt-looking last line is NOT
+// enough: PROMPT_PATTERNS also match ordinary output (a Python log line ending
+// in "]" or ">"), so a long run that printed such a line and went quiet was
+// reported finished (factorio-ai smoke runs, 2026-11-09). We additionally
+// require the pane's foreground process to be back to what it was before the
+// command was sent (`baseline`, e.g. "bash", or "mariadb"/"ssh" when typing
+// into a client) or to be a shell. While a pipeline runs it is "python", "tee"...
+// Without a known baseline (pane info failed) we keep the old prompt-only rule.
+export async function commandFinished(target: string, lastLine: string, baseline?: string): Promise<boolean> {
+  if (!isPromptLine(lastLine)) return false;
+  if (!baseline) return true;
+  let current: string;
+  try {
+    current = (await getPaneInfo(target)).command;
+  } catch (_e) {
+    return true;
+  }
+  return current === baseline || isShellCommand(current);
+}
+
 // Check if line is a dangerous interactive prompt
 export function isDangerousPrompt(line: string): boolean {
   for (const pattern of DANGER_PATTERNS) {

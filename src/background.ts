@@ -1,7 +1,7 @@
 // Background task monitoring with async callbacks to Claude session
 
 import { capturePane, getCursor, sendKeys, sendCommand } from "./tmux.js";
-import { isPromptLine, contentFingerprint, claudeInputState } from "./prompt.js";
+import { contentFingerprint, claudeInputState, commandFinished } from "./prompt.js";
 
 // Background task definition
 export interface BackgroundTask {
@@ -11,6 +11,7 @@ export interface BackgroundTask {
   callbackTarget: string;
   startedAt: number;
   maxWaitMs: number;
+  baselineCommand?: string; // foreground process before the command (see commandFinished)
 }
 
 // Active background tasks
@@ -98,6 +99,7 @@ export async function deliverCallback(callbackTarget: string, msg: string, sourc
 export async function monitorAndNotify(task: BackgroundTask): Promise<void> {
   const pollIntervalMs = 2000; // Check every 2s
   const startTime = task.startedAt;
+  let finishedPolls = 0;
 
   while (true) {
     const elapsed = Date.now() - startTime;
@@ -126,7 +128,11 @@ export async function monitorAndNotify(task: BackgroundTask): Promise<void> {
         }
       }
 
-      if (isPromptLine(lastNonEmpty)) {
+      // Finished only when the foreground process is back (commandFinished) AND that
+      // holds for two polls in a row, so a single lucky snapshot can't end monitoring.
+      if (!(await commandFinished(task.target, lastNonEmpty, task.baselineCommand))) {
+        finishedPolls = 0;
+      } else if (++finishedPolls >= 2) {
         // Command finished - deliver notification
         const duration = Math.round((Date.now() - startTime) / 1000);
         const lastLines = lines.slice(-10).filter((l: string) => l.trim() !== "").slice(-5).join("\n");

@@ -2,6 +2,17 @@
 
 **Version Format:** `vYYYY-MM-DD build HHMMSS`
 
+## v2026-11-09
+- **Trailing `;` no longer dropped** (MariaDB client, PowerShell): tmux treated an argument
+  ending in `;` as a command separator and removed it, even with `send-keys -l`. `execTmux`
+  now escapes the final `;` of every argument (`escapeTmuxArg`), which also stops `\;` from
+  losing its backslash. Affects `run_wait`, `run_background`, `type_text`, `send_key`.
+- **`run_background` / `run_wait` no longer report a still-running command as finished** when
+  its last output line merely looks like a prompt (ends in `]` or `>`): completion also needs
+  the pane's foreground process back to the pre-command one or a shell; `run_background`
+  requires it on two consecutive polls. `run_wait` results now include `baseline_command`
+  when still running.
+
 ## v2026-07-03
 - **Split `execute` into `run_wait` and `run_background`** (unmistakable naming, requested after a
   consuming Claude session repeatedly used the blocking tool for multi-hour commands and appeared

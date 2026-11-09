@@ -1,6 +1,6 @@
 # MCP TMUX Server (TypeScript) - Status
 
-**Date:** 2026-06-23
+**Date:** 2026-11-09
 **Status:** ✅ **Production-ready, active development**
 
 ---
@@ -12,6 +12,33 @@ TypeScript implementation with official MCP SDK is **complete and production-rea
 All critical improvements from the Python prototype have been successfully ported and are now active in the TypeScript version.
 
 ---
+
+## ✅ 2026-11-09: trailing semicolons no longer dropped
+
+**Problem (Zdendys):** SQL typed into the MariaDB client (and commands typed into
+Windows PowerShell) lost the `;` at the end of the line, so the statement never ran.
+Root cause: tmux parses its argv like a command line -- an argument ending in `;`
+ends the tmux command and the `;` is dropped, even for `send-keys -l`. Only
+`sendKeys` had a partial workaround; `sendCommand` (used by `run_wait` /
+`run_background`) and `send_key` had none, and an argument ending in `\;`
+(`find ... -exec rm {} \;`) silently lost its backslash.
+
+**Fix:** `escapeTmuxArg` in `tmux.ts`, applied to EVERY argument in `execTmux`:
+the final `;` becomes `\;` (tmux consumes exactly one backslash there), which
+round-trips any string. The old `sendKeys` workaround was removed. Verified on an
+isolated tmux 3.6 server: `SELECT 1;`, `x;;`, `;`, `a\;`, multi-line SQL, `send_key ";"`.
+
+## ✅ 2026-11-09: run_background / run_wait no longer end on output that looks like a prompt
+
+See Known Limitations #5 (now fixed). Completion now requires, besides a
+prompt-looking last line, that the pane's foreground process (`#{pane_current_command}`)
+is back to the one before the command was sent (`baseline_command`, e.g. `bash`;
+`mariadb`/`ssh` when typing into a client) or is a shell (`commandFinished` in
+`prompt.ts`). `run_background` additionally requires this for two polls in a row.
+Verified: a Python run printing `fuel [(45.5, 24.5)]` and sleeping 8 s was reported
+done after it really ended, not at the first `]` line; `run_wait` likewise.
+Limitation: inside a client whose process does not change (mariadb, ssh to
+PowerShell) the prompt pattern is still the only signal.
 
 ## ✅ 2026-10-23: run_background callbacks no longer hijack a half-typed prompt
 
@@ -312,6 +339,44 @@ But read_tmux_pane shows: "test" output is present in the pane
 - Fingerprint-based change detection (last 5 non-empty lines) instead of full `JSON.stringify`
 - Uses `isPromptLine()` for consistent prompt detection (was duplicated `promptPattern`)
 - Improved output extraction: finds command echo line from bottom, strips trailing prompts
+
+---
+
+### 5. `run_background` reports a still-running command as finished
+
+**Issue:** `monitorAndNotify` (`src/background.ts`) decides that the command has ended
+when the pane's last non-empty line matches `isPromptLine()` (`src/prompt.ts`,
+`PROMPT_PATTERNS`). Two of those patterns match ordinary program output: `/\]\s*$/` (a
+line ending in `]`) and `/>\s*$/` (a line ending in `>`). A long run that prints such a
+line and then stays silent for one 2-second poll is reported `[tmux:...:done] ...
+finished in Ns` while it keeps running.
+
+**Observed (factorio-ai, Zdendys asked):** three 30-minute smoke runs
+(`venv/bin/python scripts/smoke_run_reactive_2026_10_23.py 1800 | tee ...`) were each
+reported "finished" after 47-55 s. Every time the last line was a Python log line
+ending in `]`, e.g. `... fuel chests [(45.5, 24.5), (46.5, 25.5)]`, printed just
+before the script waited a few seconds on a game task. `pgrep` showed the script and
+the Factorio server still running, and the log kept growing.
+
+**Consequences:**
+- The real end of the run is never reported: the task is already deleted from
+  `backgroundTasks`.
+- A caller that trusts the notification acts on a run that is still going, e.g.
+  reads an unfinished log or starts a second server.
+
+**Suggested fix:** treat a prompt-looking last line as the end only when the pane's
+foreground process is a shell again (`#{pane_current_command}` via `getPaneInfo`, e.g.
+`bash`/`zsh`/`sh`/`fish`; while a pipeline runs it is `python`, `tee`, ...). Keep the
+prompt check too, for a command that runs a nested shell. Optionally require the
+state to hold for two polls in a row. The same weak patterns also affect
+`waitForStablePrompt` (the `execute` / typing safety check), which can take a program's
+output line for an idle prompt.
+
+**Priority:** High (long runs are reported finished at random)
+**Status:** ✅ fixed 2026-11-09 for `run_background` and `run_wait` (foreground-process
+check + two consecutive polls, see top of file). `waitForStablePrompt` (pre-send
+safety check) still uses the prompt patterns alone -- it cannot know a baseline and
+must also accept idle clients like mariadb / ssh+PowerShell.
 
 ---
 

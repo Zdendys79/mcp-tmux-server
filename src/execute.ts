@@ -1,7 +1,7 @@
 // Command execution: executeAndWait, tryWrite with safety and rate limiting
 
 import { capturePane, sendCommand, sendKeys } from "./tmux.js";
-import { isPromptLine, checkPaneSafety, contentFingerprint } from "./prompt.js";
+import { isPromptLine, checkPaneSafety, contentFingerprint, commandFinished } from "./prompt.js";
 
 // Rate limiting for write operations
 const WRITE_COOLDOWN_MS = 10000; // 10 seconds
@@ -74,6 +74,7 @@ export async function executeAndWait(
   prompt_detected: boolean;
   warning?: string;
   error?: string;
+  baseline_command?: string;
 }> {
   const timeout = options.timeout || 10000; // 10s default
   const startTime = Date.now();
@@ -91,6 +92,10 @@ export async function executeAndWait(
         error: safetyCheck.warning,
       };
     }
+
+    // Foreground process before the command (e.g. "bash"); completion requires
+    // the pane to be back to it, not just a prompt-looking line (see commandFinished)
+    const baselineCommand = safetyCheck.running_process;
 
     // Capture initial content for output extraction later
     const initialContent = await capturePane(target);
@@ -132,7 +137,7 @@ export async function executeAndWait(
             break;
           }
         }
-        if (isPromptLine(lastNonEmpty)) {
+        if (await commandFinished(target, lastNonEmpty, baselineCommand)) {
           stableContent = true;
           currentContent = newContent;
           const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -222,6 +227,7 @@ export async function executeAndWait(
         execution_time_ms: executionTime,
         prompt_detected: false,
         warning: `Command may still be running after ${timeout}ms`,
+        baseline_command: baselineCommand,
       };
     }
   } catch (error) {

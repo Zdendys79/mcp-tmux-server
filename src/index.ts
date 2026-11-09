@@ -573,6 +573,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           callbackTarget: callbackSession,
           startedAt: Date.now() - (result.execution_time_ms || 0),
           maxWaitMs: maxMonitorSeconds * 1000,
+          baselineCommand: result.baseline_command,
         };
         backgroundTasks.set(taskId, task);
 
